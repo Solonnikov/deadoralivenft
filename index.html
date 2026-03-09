@@ -246,6 +246,23 @@
   </div>
 </div>
 
+<!-- Promo -->
+<div class="card" style="border-color:#f59e0b30;">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+    <img src="octopeeps_logo.png" alt="OctoPeeps" style="width:48px;height:48px;border-radius:50%;border:2px solid #f59e0b40;">
+    <div style="flex:1;min-width:200px;">
+      <div style="color:#f59e0b;font-size:0.8rem;font-weight:bold;">Built by OctoPeeps</div>
+      <div style="color:#888;font-size:0.72rem;margin-top:3px;line-height:1.5;">Builders of <a href="https://bocto.octopeeps.com/" target="_blank" style="color:#60a5fa;text-decoration:none;">@BoctoWeb3</a> - Web3 tools & infrastructure | OctoPeeps NFT Collections</div>
+      <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
+        <a href="https://bocto.octopeeps.com/" target="_blank" style="font-size:0.7rem;color:#f59e0b;text-decoration:none;">Bocto App</a>
+        <a href="https://octopeeps.com/dapps/mint/octo-kiddos-v2" target="_blank" style="font-size:0.7rem;color:#34d399;text-decoration:none;">Mint Kiddos</a>
+        <a href="https://discord.com/invite/MfMTwyP6b9" target="_blank" style="font-size:0.7rem;color:#8b5cf6;text-decoration:none;">Discord</a>
+        <a href="https://x.com/OctoPeepsNFTs" target="_blank" style="font-size:0.7rem;color:#60a5fa;text-decoration:none;">X / Twitter</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card donate-card">
   <div class="label">Support OctoPeeps</div>
   <div style="color:#888;font-size:0.78rem;margin-top:4px;margin-bottom:4px;">If this tool was useful, consider sending a tip. Click to copy address.</div>
@@ -270,6 +287,7 @@
 
 <div class="footer">
   Created by <a href="https://x.com/OctoPeepsNFTs" target="_blank">OctoPeeps</a>
+  &middot; <a href="https://discord.com/invite/MfMTwyP6b9" target="_blank">Discord</a>
 </div>
 
 <script>
@@ -965,11 +983,16 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   log(`Found ${holders.size} unique holders`);
   if (aborted()) return null;
 
+  const explorerApiKey = document.getElementById('explorer-key').value.trim();
+
   // 3b. Detect contract holders (staking, marketplace, etc.)
-  // Check top holders (>5% of supply) to see if they're contracts
-  const contractHolders = new Map(); // address -> { tokens, label }
+  // Step 1: getCode() to find which top holders are contracts
+  // Step 2: If Etherscan key available, verify by checking unique depositors
+  //         Many depositors (>5) = staking/marketplace → exclude
+  //         Few depositors (≤5) = smart contract wallet (Safe, multisig) → keep
+  const contractHolders = new Map(); // address -> { count, pct }
   const sortedByCount = Array.from(holders.entries()).sort((a, b) => b[1].length - a[1].length);
-  const minTokensForCheck = Math.max(1, Math.floor(totalSupply * 0.03)); // 3% threshold
+  const minTokensForCheck = Math.max(1, Math.floor(totalSupply * 0.05)); // 5% threshold for candidates
   const candidateContracts = sortedByCount.filter(([, tokens]) => tokens.length >= minTokensForCheck).slice(0, 10);
 
   if (candidateContracts.length > 0) {
@@ -977,14 +1000,60 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     const codeResults = await Promise.allSettled(
       candidateContracts.map(([addr]) => provider.getCode(addr))
     );
+
+    // Collect confirmed contracts
+    const confirmedContracts = [];
     codeResults.forEach((r, idx) => {
       if (r.status === 'fulfilled' && r.value && r.value !== '0x') {
-        const [addr, tokens] = candidateContracts[idx];
-        contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
-        holders.delete(addr); // remove from holder analysis
-        log(`Contract detected: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%) — excluded from health analysis`, 'info');
+        confirmedContracts.push(candidateContracts[idx]);
       }
     });
+
+    if (confirmedContracts.length > 0 && explorerApiKey) {
+      // Verify each contract: count unique depositors via Etherscan tokennfttx
+      log(`Verifying ${confirmedContracts.length} contract(s) — checking depositor count...`);
+      for (const [addr, tokens] of confirmedContracts) {
+        try {
+          const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=tokennfttx&contractaddress=${address}&address=${addr}&page=1&offset=100&sort=desc&apikey=${explorerApiKey}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          if (data.status === '1' && data.result) {
+            // Count unique addresses that sent NFTs TO this contract
+            const depositors = new Set();
+            for (const tx of data.result) {
+              if (tx.to.toLowerCase() === addr) {
+                depositors.add(tx.from.toLowerCase());
+              }
+            }
+            if (depositors.size > 5) {
+              // Many depositors → staking/marketplace contract
+              contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
+              holders.delete(addr);
+              log(`Staking/marketplace contract: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%, ${depositors.size} depositors) — excluded`, 'info');
+            } else {
+              log(`Smart contract wallet: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${depositors.size} depositors) — kept as real holder`, 'info');
+            }
+          }
+          await sleep(200);
+        } catch (e) {
+          // On error, fall back: exclude only if holding >25% of supply
+          if (tokens.length / totalSupply > 0.25) {
+            contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
+            holders.delete(addr);
+            log(`Contract ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs) — excluded (>25% of supply, depositor check failed)`, 'info');
+          }
+        }
+      }
+    } else if (confirmedContracts.length > 0) {
+      // No API key — fall back to conservative threshold (>25% of supply)
+      for (const [addr, tokens] of confirmedContracts) {
+        if (tokens.length / totalSupply > 0.25) {
+          contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
+          holders.delete(addr);
+          log(`Contract detected: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%) — excluded from health analysis`, 'info');
+        }
+      }
+    }
   }
 
   const stakedCount = Array.from(contractHolders.values()).reduce((sum, c) => sum + c.count, 0);
@@ -1034,7 +1103,6 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   const lastActivityBlock = new Map(); // address -> blockNumber (most recent per holder)
   const lastActivityTimestamp = new Map(); // address -> unix timestamp (from explorer API)
 
-  const explorerApiKey = document.getElementById('explorer-key').value.trim();
   let usedExplorerApi = false;
 
   // Strategy 1: Etherscan V2 API — single key works for all EVM chains
