@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#0f0f0f"/>
+  <!-- Zombie face (simplified from logo) -->
+  <circle cx="32" cy="28" r="16" fill="#a3b816"/>
+  <!-- X eyes -->
+  <line x1="24" y1="23" x2="29" y2="28" stroke="#0f0f0f" stroke-width="3" stroke-linecap="round"/>
+  <line x1="29" y1="23" x2="24" y2="28" stroke="#0f0f0f" stroke-width="3" stroke-linecap="round"/>
+  <line x1="35" y1="23" x2="40" y2="28" stroke="#0f0f0f" stroke-width="3" stroke-linecap="round"/>
+  <line x1="40" y1="23" x2="35" y2="28" stroke="#0f0f0f" stroke-width="3" stroke-linecap="round"/>
+  <!-- Mouth -->
+  <path d="M27 34 Q32 37 37 34" fill="none" stroke="#0f0f0f" stroke-width="2" stroke-linecap="round"/>
+  <!-- DOA text -->
+  <text x="32" y="58" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="13" fill="#f59e0b">DOA</text>
+</svg>
