@@ -140,6 +140,7 @@
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }
     .badge-active { background: #34d39933; color: #34d399; }
     .badge-dormant { background: #f59e0b33; color: #f59e0b; }
+    .badge-inactive { background: #fb923c33; color: #fb923c; }
     .badge-dead { background: #f8717133; color: #f87171; }
 
     /* Expandable */
@@ -884,7 +885,7 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
     totalSupply, chain: 'solana', chainName: 'Solana',
     explorer: SOLANA_EXPLORER,
     holders, walletHealth, totalHolders,
-    active, dormant, dead,
+    active, dormant, inactive: 0, dead,
     activePct, deadPct,
     dist, sortedHolders,
     lastMint, lastTransfer,
@@ -1193,14 +1194,64 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   }
 
   const rpcMethodUsed = Array.from(walletHealth.values()).some(v => v.method === 'rpc');
+
+  // Phase C: Wallet liveness check — for "dead" holders, check if wallet is active on-chain
+  // Only with Etherscan API key (1 call per dead wallet)
+  let inactive = 0;
+  if (explorerApiKey) {
+    const deadAddrs = holderAddrs.filter(a => {
+      const h = walletHealth.get(a);
+      return h && h.status === 'dead';
+    });
+
+    if (deadAddrs.length > 0) {
+      log(`Phase 3: Checking wallet liveness for ${deadAddrs.length} dead holders...`);
+      setProgress(baseProgress + collWeight * 0.92, `Wallet liveness: 0/${deadAddrs.length}`);
+
+      const LIVENESS_BATCH = 5; // 5 calls/sec limit
+      for (let i = 0; i < deadAddrs.length; i += LIVENESS_BATCH) {
+        if (aborted()) return null;
+        const batch = deadAddrs.slice(i, i + LIVENESS_BATCH);
+
+        const results = await Promise.allSettled(batch.map(async addr => {
+          const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=txlist&address=${addr}&page=1&offset=1&sort=desc&apikey=${explorerApiKey}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          if (data.status === '1' && data.result && data.result.length > 0) {
+            return { addr, lastGeneralTx: parseInt(data.result[0].timeStamp) };
+          }
+          return { addr, lastGeneralTx: 0 };
+        }));
+
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value.lastGeneralTx > 0) {
+            const { addr, lastGeneralTx } = r.value;
+            const age = now - lastGeneralTx;
+            // Wallet active in last 12 months → "inactive" (holding, wallet alive)
+            if (age < TWELVE_MONTHS) {
+              const existing = walletHealth.get(addr);
+              walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'inactive', method: existing.method });
+            }
+          }
+        }
+
+        const checked = Math.min(i + LIVENESS_BATCH, deadAddrs.length);
+        setProgress(baseProgress + collWeight * (0.92 + 0.06 * checked / deadAddrs.length),
+          `Wallet liveness: ${checked}/${deadAddrs.length}`);
+        if (i + LIVENESS_BATCH < deadAddrs.length) await sleep(200);
+      }
+    }
+  }
+
   // Count statuses
   let active = 0, dormant = 0, dead = 0;
   walletHealth.forEach(v => {
     if (v.status === 'active') active++;
     else if (v.status === 'dormant') dormant++;
+    else if (v.status === 'inactive') inactive++;
     else dead++;
   });
-  log(`Health: ${active} active, ${dormant} dormant, ${dead} dead`);
+  log(`Health: ${active} active, ${dormant} dormant, ${inactive} inactive, ${dead} dead`);
 
   // 5. Recent activity
   setProgress(baseProgress + collWeight * 0.92, 'Checking recent activity...');
@@ -1286,7 +1337,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     address, name, symbol, totalSupply, chain: chain.id, chainName: chain.name,
     explorer: chain.explorer,
     holders, walletHealth, totalHolders,
-    active, dormant, dead,
+    active, dormant, inactive, dead,
     activePct, deadPct,
     dist, sortedHolders,
     lastMint, lastTransfer,
@@ -1357,6 +1408,7 @@ function renderCollection(r, chain, elapsed) {
   const healthTotal = r.totalHolders || 1;
   const activeW = (r.active / healthTotal * 100).toFixed(1);
   const dormantW = (r.dormant / healthTotal * 100).toFixed(1);
+  const inactiveW = ((r.inactive || 0) / healthTotal * 100).toFixed(1);
   const deadW = (r.dead / healthTotal * 100).toFixed(1);
 
   // Wallet health table (expandable)
@@ -1364,14 +1416,17 @@ function renderCollection(r, chain, elapsed) {
     const health = r.walletHealth.get(addr) || { status: 'dead', lastTx: 0, method: 'unknown' };
     return { addr, tokens: tokens.length, lastTx: health.lastTx, status: health.status, method: health.method || '' };
   }).sort((a, b) => {
-    const order = { dead: 0, dormant: 1, active: 2 };
+    const order = { dead: 0, inactive: 1, dormant: 2, active: 3 };
     return order[a.status] - order[b.status];
   });
 
   const walletRows = sortedByStatus.map(w => {
-    const badgeCls = w.status === 'active' ? 'badge-active' : w.status === 'dormant' ? 'badge-dormant' : 'badge-dead';
+    const badgeCls = w.status === 'active' ? 'badge-active' : w.status === 'dormant' ? 'badge-dormant' : w.status === 'inactive' ? 'badge-inactive' : 'badge-dead';
     let lastTxStr;
-    if (w.lastTx > 0) {
+    const health = r.walletHealth.get(w.addr);
+    if (w.status === 'inactive' && health && health.walletLastTx > 0) {
+      lastTxStr = 'NFT idle · wallet ' + timeAgo(health.walletLastTx);
+    } else if (w.lastTx > 0) {
       lastTxStr = timeAgo(w.lastTx);
     } else if (w.method === 'nonce-only') {
       lastTxStr = w.status === 'dormant' ? 'No timestamp (wallet active)' : 'No activity found';
@@ -1437,10 +1492,11 @@ function renderCollection(r, chain, elapsed) {
     <div class="card">
       <div class="label">Wallet Health</div>
       <div style="color:#666;font-size:0.7rem;margin-bottom:10px;line-height:1.5;">
-        Based on collection transfer history (when each holder last sent/received an NFT in this collection)${r.rpcMethodUsed ? ' + on-chain nonce check' : ''}.<br>
+        Based on collection transfer history (when each holder last sent/received an NFT in this collection)${r.rpcMethodUsed ? ' + on-chain nonce check' : ''}${(r.inactive || 0) > 0 ? ' + wallet liveness check via Etherscan' : ''}.<br>
         <span style="color:#34d399">Active</span> = last collection activity &lt;3 months &middot;
-        <span style="color:#f59e0b">Dormant</span> = 3-12 months (or wallet active but no recent NFT transfers &lt;2yr) &middot;
-        <span style="color:#f87171">Dead</span> = &gt;12 months with no wallet activity, or &gt;2 years since last collection activity
+        <span style="color:#f59e0b">Dormant</span> = 3-12 months &middot;
+        <span style="color:#fb923c">Inactive</span> = no NFT activity &gt;12mo but wallet is alive on-chain &middot;
+        <span style="color:#f87171">Dead</span> = &gt;12 months with no wallet activity
       </div>
       <div class="stat-row">
         <div class="stat-block">
@@ -1453,6 +1509,11 @@ function renderCollection(r, chain, elapsed) {
           <div class="pct">${dormantW}%</div>
           <div class="lbl">Dormant (3-12mo)</div>
         </div>
+        ${(r.inactive || 0) > 0 ? `<div class="stat-block">
+          <div class="num" style="color:#fb923c">${r.inactive}</div>
+          <div class="pct">${inactiveW}%</div>
+          <div class="lbl">Inactive (wallet alive)</div>
+        </div>` : ''}
         <div class="stat-block">
           <div class="num" style="color:#f87171">${r.dead}</div>
           <div class="pct">${deadW}%</div>
@@ -1462,6 +1523,7 @@ function renderCollection(r, chain, elapsed) {
       <div class="stacked-bar">
         <div style="width:${activeW}%;background:#34d399" title="Active: ${r.active}"></div>
         <div style="width:${dormantW}%;background:#f59e0b" title="Dormant: ${r.dormant}"></div>
+        ${(r.inactive || 0) > 0 ? `<div style="width:${inactiveW}%;background:#fb923c" title="Inactive: ${r.inactive}"></div>` : ''}
         <div style="width:${deadW}%;background:#f87171" title="Dead: ${r.dead}"></div>
       </div>
       <div class="expandable-toggle" onclick="toggleExpand('${uid}')">Show all holders</div>
@@ -1509,9 +1571,9 @@ function renderCombinedOverview() {
   });
 
   // Combined wallet health
-  let totalActive = 0, totalDormant = 0, totalDead = 0;
-  analysisResults.forEach(r => { totalActive += r.active; totalDormant += r.dormant; totalDead += r.dead; });
-  const totalAll = totalActive + totalDormant + totalDead || 1;
+  let totalActive = 0, totalDormant = 0, totalInactive = 0, totalDead = 0;
+  analysisResults.forEach(r => { totalActive += r.active; totalDormant += r.dormant; totalInactive += (r.inactive || 0); totalDead += r.dead; });
+  const totalAll = totalActive + totalDormant + totalInactive + totalDead || 1;
 
   const div = document.getElementById('combined-section');
   div.style.display = 'block';
@@ -1526,11 +1588,13 @@ function renderCombinedOverview() {
       <div class="stacked-bar">
         <div style="width:${(totalActive/totalAll*100).toFixed(1)}%;background:#34d399"></div>
         <div style="width:${(totalDormant/totalAll*100).toFixed(1)}%;background:#f59e0b"></div>
+        ${totalInactive > 0 ? `<div style="width:${(totalInactive/totalAll*100).toFixed(1)}%;background:#fb923c"></div>` : ''}
         <div style="width:${(totalDead/totalAll*100).toFixed(1)}%;background:#f87171"></div>
       </div>
       <div style="font-size:0.75rem;color:#888;">
         <span style="color:#34d399">&#9632; Active: ${totalActive}</span> &middot;
         <span style="color:#f59e0b">&#9632; Dormant: ${totalDormant}</span> &middot;
+        ${totalInactive > 0 ? `<span style="color:#fb923c">&#9632; Inactive: ${totalInactive}</span> &middot;` : ''}
         <span style="color:#f87171">&#9632; Dead: ${totalDead}</span>
       </div>
     </div>
@@ -1542,7 +1606,9 @@ function getShareText() {
   return analysisResults.map(r => {
     const activePct = (r.active / (r.totalHolders || 1) * 100).toFixed(0);
     const deadPct = (r.dead / (r.totalHolders || 1) * 100).toFixed(0);
-    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders} | Active: ${activePct}% | Dead: ${deadPct}%`;
+    const inactivePct = ((r.inactive || 0) / (r.totalHolders || 1) * 100).toFixed(0);
+    const inactiveStr = (r.inactive || 0) > 0 ? ` | Inactive: ${inactivePct}%` : '';
+    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders} | Active: ${activePct}%${inactiveStr} | Dead: ${deadPct}%`;
   }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @OctoPeepsNFTs';
 }
 
