@@ -965,6 +965,33 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   log(`Found ${holders.size} unique holders`);
   if (aborted()) return null;
 
+  // 3b. Detect contract holders (staking, marketplace, etc.)
+  // Check top holders (>5% of supply) to see if they're contracts
+  const contractHolders = new Map(); // address -> { tokens, label }
+  const sortedByCount = Array.from(holders.entries()).sort((a, b) => b[1].length - a[1].length);
+  const minTokensForCheck = Math.max(1, Math.floor(totalSupply * 0.03)); // 3% threshold
+  const candidateContracts = sortedByCount.filter(([, tokens]) => tokens.length >= minTokensForCheck).slice(0, 10);
+
+  if (candidateContracts.length > 0) {
+    log(`Checking top ${candidateContracts.length} holders for contracts...`);
+    const codeResults = await Promise.allSettled(
+      candidateContracts.map(([addr]) => provider.getCode(addr))
+    );
+    codeResults.forEach((r, idx) => {
+      if (r.status === 'fulfilled' && r.value && r.value !== '0x') {
+        const [addr, tokens] = candidateContracts[idx];
+        contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
+        holders.delete(addr); // remove from holder analysis
+        log(`Contract detected: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%) — excluded from health analysis`, 'info');
+      }
+    });
+  }
+
+  const stakedCount = Array.from(contractHolders.values()).reduce((sum, c) => sum + c.count, 0);
+  if (stakedCount > 0) {
+    log(`${stakedCount} NFTs held by ${contractHolders.size} contract(s) — excluded from wallet health`, 'info');
+  }
+
   // 4. Wallet health detection — two-phase approach:
   //    Phase A: Fast RPC check (getTransactionCount) — 1 call per holder, tells us if wallet ever sent a tx
   //    Phase B: Scan Transfer events on the NFT contract — gives actual timestamps for collection activity
@@ -1340,6 +1367,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     active, dormant, inactive, dead,
     activePct, deadPct,
     dist, sortedHolders,
+    contractHolders, stakedCount,
     lastMint, lastTransfer,
     doaIndex, activityScore, distributionScore,
     rpcMethodUsed,
@@ -1453,7 +1481,7 @@ function renderCollection(r, chain, elapsed) {
       <div class="doa-label">DOA Index &middot; Dead or Alive</div>
       <div class="doa-score" style="color:${color}">${r.doaIndex}</div>
       <div class="doa-status" style="color:${color}">${status}</div>
-      <div class="doa-meta">${r.name} (${r.symbol}) &middot; Supply: ${r.totalSupply.toLocaleString()} &middot; ${r.chainName}</div>
+      <div class="doa-meta">${r.name} (${r.symbol}) &middot; Supply: ${r.totalSupply.toLocaleString()}${(r.stakedCount || 0) > 0 ? ` (${r.stakedCount} in contracts)` : ''} &middot; ${r.chainName}</div>
       <div class="doa-meta" style="font-size:0.7rem">${truncAddr(r.address)}</div>
       ${elapsed > 0 ? `<div class="doa-meta" style="font-size:0.7rem;margin-top:6px;">Analyzed in ${formatElapsed(elapsed)}</div>` : ''}
       <div style="display:flex;justify-content:center;gap:10px;margin-top:10px;flex-wrap:wrap;font-size:0.65rem;">
@@ -1469,9 +1497,16 @@ function renderCollection(r, chain, elapsed) {
     <div class="card">
       <div class="label">Holders Overview</div>
       <div class="stat-row">
-        <div class="stat-block"><div class="num" style="color:#3b82f6">${r.totalHolders}</div><div class="lbl">Unique Holders</div></div>
+        <div class="stat-block"><div class="num" style="color:#3b82f6">${r.totalHolders}</div><div class="lbl">Unique Wallets</div></div>
         <div class="stat-block"><div class="num" style="color:#f59e0b">${avgPerHolder}</div><div class="lbl">Avg Tokens/Holder</div></div>
+        ${(r.stakedCount || 0) > 0 ? `<div class="stat-block"><div class="num" style="color:#8b5cf6">${r.stakedCount}</div><div class="lbl">In Contracts (staked/locked)</div></div>` : ''}
       </div>
+      ${(r.contractHolders && r.contractHolders.size > 0) ? `
+      <div style="color:#8b5cf6;font-size:0.7rem;margin-top:8px;line-height:1.5;">
+        ${Array.from(r.contractHolders.entries()).map(([addr, info]) =>
+          `&#9632; Contract <a href="${explorerAddrUrl(r.explorer, addr)}" target="_blank" style="color:#8b5cf6">${addr.slice(0, 6)}...${addr.slice(-4)}</a>: ${info.count} NFTs (${info.pct}%) — excluded from wallet health`
+        ).join('<br>')}
+      </div>` : ''}
       <div class="label" style="margin-top:12px">Ownership Distribution</div>
       <div class="stacked-bar">${distBarHtml}</div>
       <div>${distLegendHtml}</div>
@@ -1608,7 +1643,8 @@ function getShareText() {
     const deadPct = (r.dead / (r.totalHolders || 1) * 100).toFixed(0);
     const inactivePct = ((r.inactive || 0) / (r.totalHolders || 1) * 100).toFixed(0);
     const inactiveStr = (r.inactive || 0) > 0 ? ` | Inactive: ${inactivePct}%` : '';
-    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders} | Active: ${activePct}%${inactiveStr} | Dead: ${deadPct}%`;
+    const stakedStr = (r.stakedCount || 0) > 0 ? ` (${r.stakedCount} staked/locked)` : '';
+    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders}${stakedStr} | Active: ${activePct}%${inactiveStr} | Dead: ${deadPct}%`;
   }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @OctoPeepsNFTs';
 }
 
