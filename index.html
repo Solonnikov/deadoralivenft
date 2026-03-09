@@ -1,0 +1,1463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dead or Alive NFT — Collection Health Dashboard | DOA Index</title>
+  <meta name="description" content="Free tool to check if an NFT collection is dead or alive. Analyzes holder activity, wallet health, whale concentration & DOA Index for any EVM or Solana NFT collection. No wallet connection needed." />
+  <meta name="keywords" content="NFT health check, dead NFT collection, NFT holder analysis, DOA index, NFT wallet activity, NFT whale tracker, ERC-721 analyzer, Solana NFT, collection health, NFT analytics, free NFT tool" />
+  <meta property="og:title" content="Dead or Alive NFT — Is Your Collection Still Alive?" />
+  <meta property="og:description" content="Free NFT collection health analyzer. Check holder activity, wallet health & DOA Index for any EVM or Solana collection." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://deadoralivenft.netlify.app" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Dead or Alive NFT — Collection Health Dashboard" />
+  <meta name="twitter:description" content="Free tool to check if an NFT collection is dead or alive. Analyzes holder activity, wallet health & DOA Index." />
+  <meta name="twitter:creator" content="@OctoPeepsNFTs" />
+  <link rel="canonical" href="https://deadoralivenft.netlify.app" />
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <script src="https://unpkg.com/@solana/web3.js@1.98.0/lib/index.iife.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; padding: 32px; max-width: 960px; margin: 0 auto; }
+    h1 { color: #f59e0b; margin-bottom: 8px; font-size: 1.4rem; }
+    .subtitle { color: #888; font-size: 0.78rem; margin-bottom: 24px; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+    .label { color: #888; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .value { color: #fff; font-size: 1rem; margin-bottom: 12px; }
+    .value.big { font-size: 1.2rem; color: #f59e0b; font-weight: bold; }
+    a { color: #60a5fa; }
+    .divider { border: none; border-top: 1px solid #333; margin: 16px 0; }
+
+    /* Form */
+    select, textarea, input[type="text"] {
+      width: 100%; padding: 10px; border: 1px solid #333; border-radius: 8px;
+      background: #111; color: #e0e0e0; font-family: monospace; font-size: 0.85rem;
+      margin-bottom: 12px; outline: none;
+    }
+    select:focus, textarea:focus, input[type="text"]:focus { border-color: #f59e0b; }
+    textarea { resize: vertical; min-height: 60px; }
+
+    /* Buttons */
+    button {
+      padding: 12px 24px; border: none; border-radius: 8px; font-family: monospace;
+      font-size: 0.95rem; cursor: pointer; margin-right: 10px; margin-top: 8px;
+    }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: #f59e0b; color: #000; font-weight: bold; }
+    .btn-danger { background: #1a1a1a; color: #f87171; border: 1px solid #f87171; }
+    .btn-blue { background: #3b82f6; color: #fff; }
+    .btn-green { background: #10b981; color: #000; }
+    .btn-sm { padding: 6px 14px; font-size: 0.78rem; margin-top: 0; }
+
+    /* Progress */
+    #progress-section { display: none; }
+    .progress-bar-wrap { background: #111; border-radius: 8px; height: 20px; overflow: hidden; margin-bottom: 12px; }
+    .progress-bar-fill { height: 100%; background: #f59e0b; border-radius: 8px; transition: width 0.3s; width: 0%; }
+    #log { max-height: 200px; overflow-y: auto; font-size: 0.75rem; color: #aaa; line-height: 1.7; }
+    #log .err { color: #f87171; }
+    #log .ok { color: #34d399; }
+    #log .info { color: #3b82f6; }
+    #log .warn { color: #f59e0b; }
+
+    /* Results */
+    #results-section { display: none; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 10px; }
+    th { color: #888; text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; }
+    td { padding: 5px 8px; border-bottom: 1px solid #222; color: #ccc; }
+    td.addr { font-size: 0.72rem; color: #aaa; }
+    tr:hover td { background: #222; }
+    .tbl-wrap { max-height: 300px; overflow-y: auto; margin-top: 8px; }
+
+    /* DOA Hero */
+    .doa-hero {
+      text-align: center; padding: 32px 20px; border-radius: 10px; margin-bottom: 16px;
+      background: linear-gradient(135deg, #1a1a1a 0%, #1a1a1a 100%); border: 2px solid #333;
+    }
+    .doa-score { font-size: 4rem; font-weight: bold; line-height: 1; }
+    .doa-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-top: 4px; }
+    .doa-status { font-size: 1.2rem; font-weight: bold; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .doa-meta { color: #888; font-size: 0.78rem; margin-top: 12px; }
+
+    /* Stat blocks */
+    .stat-row { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+    .stat-block { flex: 1; min-width: 100px; text-align: center; padding: 16px; border-radius: 8px; background: #111; border: 1px solid #333; }
+    .stat-block .num { font-size: 1.8rem; font-weight: bold; }
+    .stat-block .lbl { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-top: 4px; }
+    .stat-block .pct { font-size: 0.85rem; color: #888; }
+
+    /* Stacked bar */
+    .stacked-bar { display: flex; height: 24px; border-radius: 6px; overflow: hidden; margin: 12px 0; }
+    .stacked-bar > div { transition: width 0.3s; min-width: 0; }
+
+    /* Horizontal bar chart */
+    .h-bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 0.78rem; }
+    .h-bar-label { width: 120px; text-align: right; color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .h-bar-fill { height: 16px; border-radius: 4px; background: #f59e0b; transition: width 0.3s; }
+    .h-bar-value { color: #888; font-size: 0.72rem; min-width: 50px; }
+
+    /* Status badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }
+    .badge-active { background: #34d39933; color: #34d399; }
+    .badge-dormant { background: #f59e0b33; color: #f59e0b; }
+    .badge-dead { background: #f8717133; color: #f87171; }
+
+    /* Expandable */
+    .expandable-toggle { cursor: pointer; color: #3b82f6; font-size: 0.78rem; margin-top: 8px; }
+    .expandable-toggle:hover { text-decoration: underline; }
+    .expandable-content { display: none; }
+    .expandable-content.open { display: block; }
+
+    /* Share */
+    .share-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+    /* Footer */
+    .footer { text-align: center; color: #666; font-size: 0.75rem; margin-top: 32px; padding-top: 16px; border-top: 1px solid #222; }
+    .footer a { color: #f59e0b; }
+
+    /* Collection separator */
+    .collection-results { margin-bottom: 24px; padding-bottom: 24px; border-bottom: 2px solid #333; }
+    .collection-results:last-child { border-bottom: none; }
+
+    /* Donate */
+    .donate-card { border-color: #f59e0b40; }
+    .donate-card .label { color: #f59e0b; }
+    .donate-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
+    .donate-item { background: #111; border: 1px solid #333; border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; position: relative; }
+    .donate-item:hover { border-color: #f59e0b; }
+    .donate-item .chain-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 4px; }
+    .donate-item .addr-text { font-size: 0.7rem; color: #aaa; word-break: break-all; line-height: 1.4; }
+    .donate-item .copied-toast { position: absolute; top: 8px; right: 10px; font-size: 0.65rem; color: #34d399; opacity: 0; transition: opacity 0.2s; }
+    .donate-item .copied-toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<h1>Dead or Alive NFT</h1>
+<div class="subtitle">Free NFT collection health analyzer — holder activity, wallet health & DOA Index for any EVM or Solana collection</div>
+
+<!-- Input Section -->
+<div class="card" id="input-section">
+  <div class="label">Network Type</div>
+  <div style="display:flex;gap:0;margin-bottom:12px;">
+    <button id="btn-evm" class="btn-primary btn-sm" style="border-radius:8px 0 0 8px;margin:0;" onclick="setNetworkType('evm')">EVM</button>
+    <button id="btn-solana" class="btn-sm" style="border-radius:0 8px 8px 0;margin:0;background:#333;color:#aaa;" onclick="setNetworkType('solana')">Solana</button>
+  </div>
+
+  <div id="chain-row">
+    <div class="label">Chain</div>
+    <select id="chain-select"></select>
+  </div>
+
+  <div id="solana-key-row" style="display:none;">
+    <div class="label">Helius API Key <span style="color:#666;font-weight:normal">(free at <a href="https://www.helius.dev" target="_blank">helius.dev</a> — required for Solana)</span></div>
+    <input type="text" id="helius-key" placeholder="Your free Helius API key" />
+  </div>
+
+  <div class="label" id="address-label">Contract Addresses (one per line)</div>
+  <textarea id="addresses" placeholder="0x3057003775Ca4ecFcEa0ef8AaD15614efA60Bb61"></textarea>
+
+  <button class="btn-primary" id="btn-analyze" onclick="startAnalysis()">Analyze</button>
+</div>
+
+<!-- Progress Section -->
+<div id="progress-section">
+  <div class="card">
+    <div class="label">Progress</div>
+    <div class="progress-bar-wrap" style="position:relative;">
+      <div class="progress-bar-fill" id="progress-bar"></div>
+      <div id="progress-pct" style="position:absolute;top:0;left:0;right:0;text-align:center;line-height:20px;font-size:0.7rem;color:#fff;font-weight:bold;"></div>
+    </div>
+    <div id="progress-text" style="font-size:0.78rem;color:#888;margin-bottom:8px;"></div>
+    <button class="btn-danger btn-sm" id="btn-abort" onclick="abortAnalysis()" style="margin-bottom:12px;">Abort</button>
+    <div id="log"></div>
+  </div>
+</div>
+
+<!-- Results Section -->
+<div id="results-section">
+  <div id="results-container"></div>
+
+  <!-- Combined overview (multi-collection) -->
+  <div id="combined-section" style="display:none;"></div>
+
+  <!-- Share Section -->
+  <div class="card" id="share-section" style="display:none;">
+    <div class="label">Share Results</div>
+    <div class="share-row" style="margin-top:8px;">
+      <button class="btn-blue btn-sm" onclick="shareOnX()">Share on X</button>
+      <button class="btn-green btn-sm" onclick="copyStats()">Copy Stats</button>
+      <button class="btn-primary btn-sm" onclick="downloadImage()">Download Report Image</button>
+    </div>
+  </div>
+</div>
+
+<div class="card donate-card">
+  <div class="label">Support OctoPeeps</div>
+  <div style="color:#888;font-size:0.78rem;margin-top:4px;margin-bottom:4px;">If this tool was useful, consider sending a tip. Click to copy address.</div>
+  <div class="donate-grid">
+    <div class="donate-item" onclick="copyDonateAddr(this, '0xe2bb4FF2091ce204d6f87Ce8c2907457B3C5B63D')">
+      <div class="chain-label">Ethereum / Polygon (ETH, POL, ERC-20)</div>
+      <div class="addr-text">0xe2bb4FF2091ce204d6f87Ce8c2907457B3C5B63D</div>
+      <div class="copied-toast">Copied!</div>
+    </div>
+    <div class="donate-item" onclick="copyDonateAddr(this, '6x9rcpF2fEfG8iJQXRDf4VMNw7Beqt6izTPhPmbhDoZz')">
+      <div class="chain-label">Solana (SOL, SPL)</div>
+      <div class="addr-text">6x9rcpF2fEfG8iJQXRDf4VMNw7Beqt6izTPhPmbhDoZz</div>
+      <div class="copied-toast">Copied!</div>
+    </div>
+    <div class="donate-item" onclick="copyDonateAddr(this, 'bc1qkd8rzgkzt8d783szvumydfzvg36psct2h72knc')">
+      <div class="chain-label">Bitcoin (BTC)</div>
+      <div class="addr-text">bc1qkd8rzgkzt8d783szvumydfzvg36psct2h72knc</div>
+      <div class="copied-toast">Copied!</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  Created by <a href="https://x.com/OctoPeepsNFTs" target="_blank">OctoPeeps</a>
+</div>
+
+<script>
+// ─── Chain Configuration ────────────────────────────────────────────────────
+const CHAINS = [
+  { id: 'ethereum', chainId: 1, name: 'Ethereum', currency: 'ETH', blockTime: 12,
+    rpcUrls: ['https://ethereum-rpc.publicnode.com','https://rpc.ankr.com/eth','https://eth.llamarpc.com'],
+    explorer: 'https://etherscan.io', explorerApi: 'https://api.etherscan.io/api' },
+  { id: 'polygon', chainId: 137, name: 'Polygon', currency: 'MATIC', blockTime: 2,
+    rpcUrls: ['https://polygon-bor-rpc.publicnode.com','https://rpc.ankr.com/polygon','https://polygon.llamarpc.com'],
+    explorer: 'https://polygonscan.com', explorerApi: 'https://api.polygonscan.com/api' },
+  { id: 'base', chainId: 8453, name: 'Base', currency: 'ETH', blockTime: 2,
+    rpcUrls: ['https://base-rpc.publicnode.com','https://rpc.ankr.com/base','https://base.llamarpc.com'],
+    explorer: 'https://basescan.org', explorerApi: 'https://api.basescan.org/api' },
+  { id: 'arbitrum', chainId: 42161, name: 'Arbitrum', currency: 'ETH', blockTime: 0.25,
+    rpcUrls: ['https://arbitrum-one-rpc.publicnode.com','https://rpc.ankr.com/arbitrum','https://arbitrum.llamarpc.com'],
+    explorer: 'https://arbiscan.io', explorerApi: 'https://api.arbiscan.io/api' },
+  { id: 'optimism', chainId: 10, name: 'Optimism', currency: 'ETH', blockTime: 2,
+    rpcUrls: ['https://optimism-rpc.publicnode.com','https://rpc.ankr.com/optimism','https://optimism.llamarpc.com'],
+    explorer: 'https://optimistic.etherscan.io', explorerApi: 'https://api-optimistic.etherscan.io/api' },
+  { id: 'avalanche', chainId: 43114, name: 'Avalanche', currency: 'AVAX', blockTime: 2,
+    rpcUrls: ['https://avalanche-c-chain-rpc.publicnode.com','https://rpc.ankr.com/avalanche','https://avalanche.public-rpc.com'],
+    explorer: 'https://snowtrace.io', explorerApi: 'https://api.snowtrace.io/api' },
+  { id: 'bsc', chainId: 56, name: 'BNB Chain', currency: 'BNB', blockTime: 3,
+    rpcUrls: ['https://bsc-rpc.publicnode.com','https://rpc.ankr.com/bsc','https://bsc.llamarpc.com'],
+    explorer: 'https://bscscan.com', explorerApi: 'https://api.bscscan.com/api' },
+  { id: 'gnosis', chainId: 100, name: 'Gnosis', currency: 'xDAI', blockTime: 5,
+    rpcUrls: ['https://gnosis-rpc.publicnode.com','https://rpc.ankr.com/gnosis','https://rpc.gnosischain.com'],
+    explorer: 'https://gnosisscan.io', explorerApi: 'https://api.gnosisscan.io/api' },
+  { id: 'zora', chainId: 7777777, name: 'Zora', currency: 'ETH', blockTime: 2,
+    rpcUrls: ['https://rpc.zora.energy','https://zora.drpc.org'],
+    explorer: 'https://explorer.zora.energy', explorerApi: null },
+  { id: 'linea', chainId: 59144, name: 'Linea', currency: 'ETH', blockTime: 12,
+    rpcUrls: ['https://linea-rpc.publicnode.com','https://rpc.linea.build'],
+    explorer: 'https://lineascan.build', explorerApi: 'https://api.lineascan.build/api' },
+  { id: 'scroll', chainId: 534352, name: 'Scroll', currency: 'ETH', blockTime: 3,
+    rpcUrls: ['https://scroll-rpc.publicnode.com','https://rpc.scroll.io'],
+    explorer: 'https://scrollscan.com', explorerApi: 'https://api.scrollscan.com/api' },
+  { id: 'fantom', chainId: 250, name: 'Fantom', currency: 'FTM', blockTime: 1,
+    rpcUrls: ['https://fantom-rpc.publicnode.com','https://rpc.ankr.com/fantom','https://rpc.ftm.tools'],
+    explorer: 'https://ftmscan.com', explorerApi: 'https://api.ftmscan.com/api' },
+  { id: 'moonbeam', chainId: 1284, name: 'Moonbeam', currency: 'GLMR', blockTime: 12,
+    rpcUrls: ['https://moonbeam-rpc.publicnode.com','https://rpc.api.moonbeam.network'],
+    explorer: 'https://moonscan.io', explorerApi: 'https://api-moonbeam.moonscan.io/api' },
+  { id: 'moonriver', chainId: 1285, name: 'Moonriver', currency: 'MOVR', blockTime: 12,
+    rpcUrls: ['https://moonriver-rpc.publicnode.com','https://rpc.api.moonriver.moonbeam.network'],
+    explorer: 'https://moonriver.moonscan.io', explorerApi: 'https://api-moonriver.moonscan.io/api' },
+  { id: 'cronos', chainId: 25, name: 'Cronos', currency: 'CRO', blockTime: 6,
+    rpcUrls: ['https://cronos-evm-rpc.publicnode.com','https://evm.cronos.org'],
+    explorer: 'https://cronoscan.com', explorerApi: 'https://api.cronoscan.com/api' },
+  { id: 'celo', chainId: 42220, name: 'Celo', currency: 'CELO', blockTime: 5,
+    rpcUrls: ['https://celo-rpc.publicnode.com','https://forno.celo.org'],
+    explorer: 'https://celoscan.io', explorerApi: 'https://api.celoscan.io/api' },
+  { id: 'aurora', chainId: 1313161554, name: 'Aurora', currency: 'ETH', blockTime: 1,
+    rpcUrls: ['https://aurora-rpc.publicnode.com','https://mainnet.aurora.dev'],
+    explorer: 'https://explorer.aurora.dev', explorerApi: null },
+  { id: 'mantle', chainId: 5000, name: 'Mantle', currency: 'MNT', blockTime: 2,
+    rpcUrls: ['https://mantle-rpc.publicnode.com','https://rpc.mantle.xyz'],
+    explorer: 'https://mantlescan.xyz', explorerApi: 'https://api.mantlescan.xyz/api' },
+  { id: 'blast', chainId: 81457, name: 'Blast', currency: 'ETH', blockTime: 2,
+    rpcUrls: ['https://blast-rpc.publicnode.com','https://rpc.blast.io'],
+    explorer: 'https://blastscan.io', explorerApi: 'https://api.blastscan.io/api' },
+  { id: 'mode', chainId: 34443, name: 'Mode', currency: 'ETH', blockTime: 2,
+    rpcUrls: ['https://mode-rpc.publicnode.com','https://mainnet.mode.network'],
+    explorer: 'https://modescan.io', explorerApi: null },
+  { id: 'abstract', chainId: 2741, name: 'Abstract', currency: 'ETH', blockTime: 1,
+    rpcUrls: ['https://api.abstractions.io','https://abstract.drpc.org'],
+    explorer: 'https://abscan.org', explorerApi: null },
+  { id: 'sei', chainId: 1329, name: 'Sei', currency: 'SEI', blockTime: 0.4,
+    rpcUrls: ['https://evm-rpc.sei-apis.com','https://sei-evm.drpc.org'],
+    explorer: 'https://seitrace.com', explorerApi: null },
+  { id: 'apechain', chainId: 33139, name: 'ApeChain', currency: 'APE', blockTime: 1,
+    rpcUrls: ['https://apechain.calderachain.xyz/http','https://rpc.apechain.com/http'],
+    explorer: 'https://apescan.io', explorerApi: 'https://api.apescan.io/api' },
+  { id: 'berachain', chainId: 80094, name: 'Berachain', currency: 'BERA', blockTime: 2,
+    rpcUrls: ['https://rpc.berachain.com','https://berachain-rpc.publicnode.com'],
+    explorer: 'https://berascan.com', explorerApi: 'https://api.berascan.com/api' },
+  { id: 'monad', chainId: 10143, name: 'Monad Testnet', currency: 'MON', blockTime: 0.5,
+    rpcUrls: ['https://testnet-rpc.monad.xyz'],
+    explorer: 'https://testnet.monadexplorer.com', explorerApi: null },
+  { id: 'ronin', chainId: 2020, name: 'Ronin', currency: 'RON', blockTime: 3,
+    rpcUrls: ['https://api.roninchain.com/rpc','https://ronin-rpc.publicnode.com'],
+    explorer: 'https://app.roninchain.com', explorerApi: null },
+  { id: 'sepolia', chainId: 11155111, name: 'Sepolia (Testnet)', currency: 'ETH', blockTime: 12,
+    rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com','https://rpc.ankr.com/eth_sepolia'],
+    explorer: 'https://sepolia.etherscan.io', explorerApi: 'https://api-sepolia.etherscan.io/api' },
+];
+
+// ─── State ──────────────────────────────────────────────────────────────────
+let abortController = null;
+let analysisResults = [];
+const sessionCache = new Map();
+
+// ─── ERC-721 ABI ────────────────────────────────────────────────────────────
+const ERC721_ABI = [
+  'function name() view returns (string)',
+  'function symbol() view returns (string)',
+  'function totalSupply() view returns (uint256)',
+  'function ownerOf(uint256 tokenId) view returns (address)',
+  'function balanceOf(address owner) view returns (uint256)',
+  'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)',
+];
+
+// ─── Solana Config ──────────────────────────────────────────────────────────
+const SOLANA_RPCS = [
+  'https://api.mainnet-beta.solana.com',
+  'https://solana-rpc.publicnode.com',
+];
+const SOLANA_EXPLORER = 'https://solscan.io';
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+let networkType = 'evm'; // 'evm' or 'solana'
+
+(function init() {
+  const sel = document.getElementById('chain-select');
+  CHAINS.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `${c.name} (${c.currency})`;
+    sel.appendChild(opt);
+  });
+  sel.value = 'polygon';
+})();
+
+function setNetworkType(type) {
+  networkType = type;
+  const evmBtn = document.getElementById('btn-evm');
+  const solBtn = document.getElementById('btn-solana');
+  const chainRow = document.getElementById('chain-row');
+  const addrLabel = document.getElementById('address-label');
+  const textarea = document.getElementById('addresses');
+
+  const solKeyRow = document.getElementById('solana-key-row');
+  if (type === 'solana') {
+    evmBtn.className = 'btn-sm'; evmBtn.style.cssText = 'border-radius:8px 0 0 8px;margin:0;background:#333;color:#aaa;';
+    solBtn.className = 'btn-primary btn-sm'; solBtn.style.cssText = 'border-radius:0 8px 8px 0;margin:0;';
+    chainRow.style.display = 'none';
+    solKeyRow.style.display = 'block';
+    addrLabel.textContent = 'Collection Address (Metaplex Certified Collection)';
+    textarea.placeholder = 'e.g. DRiP2Pn2K6fuMLKQwEJrYNLXnTCsavYU9hcDX5Amhk4c';
+  } else {
+    evmBtn.className = 'btn-primary btn-sm'; evmBtn.style.cssText = 'border-radius:8px 0 0 8px;margin:0;';
+    solBtn.className = 'btn-sm'; solBtn.style.cssText = 'border-radius:0 8px 8px 0;margin:0;background:#333;color:#aaa;';
+    chainRow.style.display = 'block';
+    solKeyRow.style.display = 'none';
+    addrLabel.textContent = 'Contract Addresses (one per line)';
+    textarea.placeholder = '0x3057003775Ca4ecFcEa0ef8AaD15614efA60Bb61';
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function log(msg, cls = '') {
+  const el = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = msg;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setProgress(pct, text) {
+  const rounded = Math.round(Math.min(100, pct));
+  document.getElementById('progress-bar').style.width = rounded + '%';
+  document.getElementById('progress-pct').textContent = rounded + '%';
+  document.getElementById('progress-text').textContent = text || '';
+}
+
+function truncAddr(addr) {
+  return addr.slice(0, 6) + '...' + addr.slice(-4);
+}
+
+function explorerAddrUrl(explorer, addr) {
+  if (explorer.includes('solscan')) return `${explorer}/account/${addr}`;
+  return `${explorer}/address/${addr}`;
+}
+
+function timeAgo(ts) {
+  const now = Date.now() / 1000;
+  const diff = now - ts;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' hours ago';
+  if (diff < 2592000) return Math.floor(diff / 86400) + ' days ago';
+  if (diff < 31536000) return Math.floor(diff / 2592000) + ' months ago';
+  return Math.floor(diff / 31536000) + ' years ago';
+}
+
+function doaColor(score) {
+  if (score >= 80) return '#34d399';
+  if (score >= 60) return '#a3e635';
+  if (score >= 40) return '#f59e0b';
+  if (score >= 20) return '#fb923c';
+  return '#f87171';
+}
+
+function doaStatus(score) {
+  if (score >= 80) return 'THRIVING';
+  if (score >= 60) return 'HEALTHY';
+  if (score >= 40) return 'LUKEWARM';
+  if (score >= 20) return 'DECLINING';
+  return 'DEAD';
+}
+
+// ─── RPC with fallback ─────────────────────────────────────────────────────
+async function createProvider(chain) {
+  for (const url of chain.rpcUrls) {
+    try {
+      const p = new ethers.providers.JsonRpcProvider(url);
+      await p.getBlockNumber();
+      log(`Connected to ${chain.name} via ${new URL(url).hostname}`, 'ok');
+      return p;
+    } catch { /* try next */ }
+  }
+  throw new Error(`All RPCs failed for ${chain.name}`);
+}
+
+async function withRetry(fn, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i === retries - 1) throw e;
+      await sleep(Math.min(1000 * Math.pow(2, i), 5000));
+    }
+  }
+}
+
+// ─── Analysis ───────────────────────────────────────────────────────────────
+async function startAnalysis() {
+  if (networkType === 'solana') return startSolanaAnalysis();
+  return startEvmAnalysis();
+}
+
+async function startEvmAnalysis() {
+  const chainId = document.getElementById('chain-select').value;
+  const chain = CHAINS.find(c => c.id === chainId);
+  const raw = document.getElementById('addresses').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+
+  // Validate
+  const addresses = [];
+  for (const addr of raw) {
+    if (!ethers.utils.isAddress(addr)) {
+      alert(`Invalid address: ${addr}`);
+      return;
+    }
+    addresses.push(ethers.utils.getAddress(addr));
+  }
+  if (addresses.length === 0) { alert('Enter at least one contract address.'); return; }
+
+  // UI state
+  resetUI();
+
+  abortController = new AbortController();
+  const aborted = () => abortController.signal.aborted;
+
+  try {
+    const provider = await createProvider(chain);
+
+    for (let ci = 0; ci < addresses.length; ci++) {
+      if (aborted()) break;
+      const addr = addresses[ci];
+      const cacheKey = `${chainId}:${addr}`;
+
+      if (sessionCache.has(cacheKey)) {
+        log(`Using cached results for ${truncAddr(addr)}`, 'info');
+        analysisResults.push(sessionCache.get(cacheKey));
+        continue;
+      }
+
+      log(`\nAnalyzing collection ${ci + 1}/${addresses.length}: ${truncAddr(addr)}`, 'info');
+      const result = await analyzeCollection(provider, chain, addr, aborted, ci, addresses.length);
+      if (aborted()) break;
+
+      if (result) {
+        sessionCache.set(cacheKey, result);
+        analysisResults.push(result);
+      }
+    }
+
+    if (!aborted() && analysisResults.length > 0) {
+      renderResults(chain);
+    }
+  } catch (e) {
+    log(`Error: ${e.message}`, 'err');
+  }
+
+  finishUI();
+}
+
+function resetUI() {
+  document.getElementById('btn-analyze').disabled = true;
+  document.getElementById('progress-section').style.display = 'block';
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('results-container').innerHTML = '';
+  document.getElementById('combined-section').innerHTML = '';
+  document.getElementById('combined-section').style.display = 'none';
+  document.getElementById('share-section').style.display = 'none';
+  document.getElementById('log').innerHTML = '';
+  setProgress(0, 'Connecting...');
+  analysisResults = [];
+}
+
+function finishUI() {
+  document.getElementById('btn-analyze').disabled = false;
+  if (abortController && abortController.signal.aborted) {
+    log('Analysis aborted.', 'warn');
+    setProgress(0, 'Aborted');
+  }
+}
+
+// ─── Solana Analysis ────────────────────────────────────────────────────────
+function getHeliusRpcUrl() {
+  const key = document.getElementById('helius-key').value.trim();
+  if (!key) return null;
+  return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+}
+
+async function createSolanaConnection() {
+  const { Connection } = solanaWeb3;
+  const heliusUrl = getHeliusRpcUrl();
+  const urls = heliusUrl ? [heliusUrl, ...SOLANA_RPCS] : SOLANA_RPCS;
+  for (const url of urls) {
+    try {
+      const conn = new Connection(url, 'confirmed');
+      await conn.getSlot();
+      log(`Connected to Solana via ${new URL(url).hostname}`, 'ok');
+      return { conn, dasUrl: heliusUrl || url };
+    } catch { /* try next */ }
+  }
+  throw new Error('All Solana RPCs failed');
+}
+
+async function startSolanaAnalysis() {
+  const heliusKey = document.getElementById('helius-key').value.trim();
+  if (!heliusKey) {
+    alert('A free Helius API key is required for Solana collections.\n\nGet one at helius.dev (free, takes 30 seconds).');
+    return;
+  }
+
+  const raw = document.getElementById('addresses').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+  if (raw.length === 0) { alert('Enter at least one collection address.'); return; }
+
+  const { PublicKey } = solanaWeb3;
+  const addresses = [];
+  for (const addr of raw) {
+    try {
+      new PublicKey(addr);
+      addresses.push(addr);
+    } catch {
+      alert(`Invalid Solana address: ${addr}`);
+      return;
+    }
+  }
+
+  resetUI();
+  abortController = new AbortController();
+  const aborted = () => abortController.signal.aborted;
+
+  try {
+    const { conn: connection, dasUrl } = await createSolanaConnection();
+
+    for (let ci = 0; ci < addresses.length; ci++) {
+      if (aborted()) break;
+      const addr = addresses[ci];
+      const cacheKey = `solana:${addr}`;
+
+      if (sessionCache.has(cacheKey)) {
+        log(`Using cached results for ${truncAddr(addr)}`, 'info');
+        analysisResults.push(sessionCache.get(cacheKey));
+        continue;
+      }
+
+      log(`\nAnalyzing Solana collection ${ci + 1}/${addresses.length}: ${truncAddr(addr)}`, 'info');
+      const result = await analyzeSolanaCollection(connection, dasUrl, addr, aborted, ci, addresses.length);
+      if (aborted()) break;
+
+      if (result) {
+        sessionCache.set(cacheKey, result);
+        analysisResults.push(result);
+      }
+    }
+
+    if (!aborted() && analysisResults.length > 0) {
+      const solChain = { id: 'solana', name: 'Solana', explorer: SOLANA_EXPLORER };
+      renderResults(solChain);
+    }
+  } catch (e) {
+    log(`Error: ${e.message}`, 'err');
+  }
+
+  finishUI();
+}
+
+async function dasGetAssetsByGroup(dasUrl, collectionAddr, page, limit) {
+  const resp = await fetch(dasUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      method: 'getAssetsByGroup',
+      params: { groupKey: 'collection', groupValue: collectionAddr, page, limit },
+    }),
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.message || 'DAS API error');
+  return data.result;
+}
+
+async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, aborted, collIndex, totalColls) {
+  const { PublicKey } = solanaWeb3;
+  const baseProgress = (collIndex / totalColls) * 100;
+  const collWeight = 100 / totalColls;
+
+  // 1. Fetch all NFTs via DAS API (Helius)
+  setProgress(baseProgress + collWeight * 0.02, 'Fetching collection NFTs via DAS API...');
+  let assets = [];
+  let collectionName = '';
+  let collectionSymbol = '';
+
+  try {
+    let page = 1;
+    while (true) {
+      if (aborted()) return null;
+      const result = await dasGetAssetsByGroup(dasUrl, collectionAddr, page, 1000);
+      if (!result || !result.items || result.items.length === 0) break;
+
+      assets = assets.concat(result.items);
+      if (!collectionName && result.items[0].content) {
+        collectionName = result.items[0].content.metadata?.name?.replace(/ ?#\d+$/, '').trim() || '';
+        collectionSymbol = result.items[0].content.metadata?.symbol || '';
+      }
+      setProgress(baseProgress + collWeight * (0.02 + 0.13 * (page / Math.max(page, Math.ceil((result.total || assets.length) / 1000)))),
+        `Fetched ${assets.length} NFTs...`);
+
+      if (result.items.length < 1000) break;
+      page++;
+      await sleep(500); // Helius free: 2 DAS req/sec
+    }
+  } catch (e) {
+    log(`DAS API error: ${e.message}`, 'err');
+    if (e.message.includes('Invalid API')) {
+      log('Check your Helius API key', 'err');
+    }
+    return null;
+  }
+
+  if (assets.length === 0) {
+    log(`No NFTs found for collection ${truncAddr(collectionAddr)}. Make sure this is a valid Metaplex collection address.`, 'err');
+    return null;
+  }
+
+  const totalSupply = assets.length;
+  if (!collectionName) collectionName = 'Solana Collection';
+  if (!collectionSymbol) collectionSymbol = 'NFT';
+  log(`${collectionName} (${collectionSymbol}) — Supply: ${totalSupply}`, 'ok');
+
+  // 2. Build holder map from DAS data
+  setProgress(baseProgress + collWeight * 0.15, 'Building holder map...');
+  const holders = new Map();
+  let burned = 0;
+
+  for (const asset of assets) {
+    const owner = asset.ownership?.owner;
+    if (!owner || asset.burnt) { burned++; continue; }
+    if (!holders.has(owner)) holders.set(owner, []);
+    holders.get(owner).push(asset.id);
+  }
+
+  const totalHolders = holders.size;
+  log(`Found ${totalHolders} unique holders` + (burned > 0 ? ` (${burned} burned)` : ''));
+  if (aborted()) return null;
+
+  // 3. Wallet health via getSignaturesForAddress — gives timestamps directly!
+  setProgress(baseProgress + collWeight * 0.20, 'Checking wallet activity...');
+  const walletHealth = new Map();
+  const holderAddrs = Array.from(holders.keys());
+  const now = Date.now() / 1000;
+  const THREE_MONTHS = 90 * 86400;
+  const TWELVE_MONTHS = 365 * 86400;
+
+  const solBatchSize = 3; // Conservative for public RPCs
+  for (let i = 0; i < holderAddrs.length; i += solBatchSize) {
+    if (aborted()) return null;
+    const batch = holderAddrs.slice(i, i + solBatchSize);
+
+    const results = await Promise.allSettled(batch.map(async addr => {
+      try {
+        const sigs = await connection.getSignaturesForAddress(
+          new PublicKey(addr), { limit: 1 }, 'confirmed'
+        );
+        if (sigs.length > 0 && sigs[0].blockTime) {
+          return { addr, lastTx: sigs[0].blockTime };
+        }
+        return { addr, lastTx: 0 };
+      } catch {
+        return { addr, lastTx: -1 }; // error
+      }
+    }));
+
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        const { addr, lastTx } = r.value;
+        if (lastTx === -1) {
+          walletHealth.set(addr, { lastTx: 0, status: 'dormant', method: 'error' });
+          continue;
+        }
+        const age = now - lastTx;
+        let status;
+        if (lastTx === 0) status = 'dead';
+        else if (age < THREE_MONTHS) status = 'active';
+        else if (age < TWELVE_MONTHS) status = 'dormant';
+        else status = 'dead';
+        walletHealth.set(addr, { lastTx, status, method: 'signatures' });
+      }
+    }
+
+    const pct = baseProgress + collWeight * (0.20 + 0.60 * Math.min(i + solBatchSize, holderAddrs.length) / holderAddrs.length);
+    setProgress(pct, `Wallet check: ${Math.min(i + solBatchSize, holderAddrs.length)}/${holderAddrs.length}`);
+    await sleep(500);
+  }
+
+  // Count statuses
+  let active = 0, dormant = 0, dead = 0;
+  walletHealth.forEach(v => {
+    if (v.status === 'active') active++;
+    else if (v.status === 'dormant') dormant++;
+    else dead++;
+  });
+  log(`Health: ${active} active, ${dormant} dormant, ${dead} dead`);
+
+  // 4. Recent activity
+  setProgress(baseProgress + collWeight * 0.85, 'Checking recent activity...');
+  let lastMint = null, lastTransfer = null;
+  try {
+    const collPubkey = new PublicKey(collectionAddr);
+    const sigs = await connection.getSignaturesForAddress(collPubkey, { limit: 5 }, 'confirmed');
+    if (sigs.length > 0 && sigs[0].blockTime) {
+      lastTransfer = { blockNumber: 0, timestamp: sigs[0].blockTime };
+    }
+  } catch { /* no recent activity */ }
+
+  // 5. Calculate DOA Index (same formula as EVM)
+  const activePct = totalHolders > 0 ? (active / totalHolders) * 100 : 0;
+  const deadPct = totalHolders > 0 ? (dead / totalHolders) * 100 : 0;
+
+  const holderDistScore = Math.min(100, (totalHolders / totalSupply) * 100);
+  const sortedHolders = Array.from(holders.entries()).sort((a, b) => b[1].length - a[1].length);
+  const topHolderPct = sortedHolders.length > 0 ? (sortedHolders[0][1].length / totalSupply) * 100 : 0;
+  const distributionScore = holderDistScore * (topHolderPct > 50 ? 0.5 : topHolderPct > 25 ? 0.75 : 1);
+
+  let activityScore = 0;
+  if (lastTransfer) {
+    const daysSince = (now - lastTransfer.timestamp) / 86400;
+    if (daysSince < 7) activityScore = 100;
+    else if (daysSince < 30) activityScore = 50;
+    else if (daysSince < 90) activityScore = 20;
+  }
+
+  const doaIndex = Math.round(
+    activePct * 0.40 +
+    (100 - deadPct) * 0.25 +
+    distributionScore * 0.20 +
+    activityScore * 0.15
+  );
+
+  setProgress(baseProgress + collWeight, 'Done');
+  log(`DOA Index: ${doaIndex} — ${doaStatus(doaIndex)}`, 'ok');
+
+  // Build ownership distribution
+  const dist = { one: 0, two5: 0, six10: 0, eleven50: 0, over50: 0 };
+  holders.forEach(tokens => {
+    const c = tokens.length;
+    if (c === 1) dist.one++;
+    else if (c <= 5) dist.two5++;
+    else if (c <= 10) dist.six10++;
+    else if (c <= 50) dist.eleven50++;
+    else dist.over50++;
+  });
+
+  return {
+    address: collectionAddr, name: collectionName, symbol: collectionSymbol,
+    totalSupply, chain: 'solana', chainName: 'Solana',
+    explorer: SOLANA_EXPLORER,
+    holders, walletHealth, totalHolders,
+    active, dormant, dead,
+    activePct, deadPct,
+    dist, sortedHolders,
+    lastMint, lastTransfer,
+    doaIndex, activityScore, distributionScore,
+    rpcMethodUsed: false,
+  };
+}
+
+function abortAnalysis() {
+  if (abortController) abortController.abort();
+}
+
+async function analyzeCollection(provider, chain, address, aborted, collIndex, totalColls) {
+  const contract = new ethers.Contract(address, ERC721_ABI, provider);
+  const baseProgress = (collIndex / totalColls) * 100;
+  const collWeight = 100 / totalColls;
+
+  // 1. Basic info
+  setProgress(baseProgress + collWeight * 0.02, 'Fetching collection info...');
+  let name, symbol, totalSupply;
+  try {
+    [name, symbol, totalSupply] = await Promise.all([
+      withRetry(() => contract.name()),
+      withRetry(() => contract.symbol()),
+      withRetry(() => contract.totalSupply()),
+    ]);
+    totalSupply = totalSupply.toNumber();
+    log(`${name} (${symbol}) — Supply: ${totalSupply}`, 'ok');
+  } catch (e) {
+    log(`Failed to read contract ${truncAddr(address)}: not ERC-721 or reverted`, 'err');
+    return null;
+  }
+
+  if (totalSupply > 20000) {
+    log(`Warning: Large collection (${totalSupply} tokens) — this will take a while`, 'warn');
+  }
+  if (aborted()) return null;
+
+  // 2. Determine 0-indexed or 1-indexed
+  let startIndex = 0;
+  try {
+    await contract.ownerOf(0);
+    startIndex = 0;
+  } catch {
+    startIndex = 1;
+  }
+  log(`Token IDs start at ${startIndex}`);
+
+  // 3. Enumerate holders
+  setProgress(baseProgress + collWeight * 0.05, 'Enumerating holders...');
+  const holders = new Map(); // address -> tokenIds[]
+  const batchSize = 30;
+  let enumerated = 0;
+  const endIndex = startIndex + totalSupply;
+
+  for (let i = startIndex; i < endIndex; i += batchSize) {
+    if (aborted()) return null;
+    const batch = [];
+    for (let j = i; j < Math.min(i + batchSize, endIndex); j++) {
+      batch.push(j);
+    }
+    const results = await Promise.allSettled(batch.map(id => withRetry(() => contract.ownerOf(id))));
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled') {
+        const owner = r.value.toLowerCase();
+        if (!holders.has(owner)) holders.set(owner, []);
+        holders.get(owner).push(batch[idx]);
+      }
+    });
+    enumerated += batch.length;
+    const pct = baseProgress + collWeight * (0.05 + 0.45 * (enumerated / totalSupply));
+    setProgress(pct, `Holders: ${enumerated}/${totalSupply} tokens checked`);
+
+    if (i + batchSize < endIndex) await sleep(300);
+  }
+
+  log(`Found ${holders.size} unique holders`);
+  if (aborted()) return null;
+
+  // 4. Wallet health detection — two-phase approach:
+  //    Phase A: Fast RPC check (getTransactionCount) — 1 call per holder, tells us if wallet ever sent a tx
+  //    Phase B: Scan Transfer events on the NFT contract — gives actual timestamps for collection activity
+  //    Combined: we get both "is the wallet alive on-chain" AND "when did they last touch this collection"
+  setProgress(baseProgress + collWeight * 0.52, 'Checking wallet activity...');
+  const walletHealth = new Map(); // address -> { lastTx, status, method }
+  const holderAddrs = Array.from(holders.keys());
+  const now = Date.now() / 1000;
+  const THREE_MONTHS = 90 * 86400;
+  const TWELVE_MONTHS = 365 * 86400;
+
+  // Phase A: Fast nonce + balance check (lightweight, ~1-2 calls per holder)
+  log('Phase 1: Checking wallet nonces...');
+  const rpcBatchSize = 20;
+  for (let i = 0; i < holderAddrs.length; i += rpcBatchSize) {
+    if (aborted()) return null;
+    const batch = holderAddrs.slice(i, i + rpcBatchSize);
+    const results = await Promise.allSettled(batch.map(async addr => {
+      const nonce = await withRetry(() => provider.getTransactionCount(addr));
+      return { addr, nonce };
+    }));
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        const { addr, nonce } = r.value;
+        // nonce > 0 means wallet has initiated at least one on-chain tx
+        walletHealth.set(addr, { lastTx: 0, nonce, status: nonce > 0 ? 'active' : 'dormant', method: 'rpc' });
+      }
+    }
+    const pct = baseProgress + collWeight * (0.52 + 0.15 * Math.min(i + rpcBatchSize, holderAddrs.length) / holderAddrs.length);
+    setProgress(pct, `Nonce check: ${Math.min(i + rpcBatchSize, holderAddrs.length)}/${holderAddrs.length} wallets`);
+    if (i + rpcBatchSize < holderAddrs.length) await sleep(150);
+  }
+
+  const nonceActive = Array.from(walletHealth.values()).filter(v => v.nonce > 0).length;
+  log(`Nonce check: ${nonceActive} wallets have sent txs, ${holderAddrs.length - nonceActive} have not`);
+
+  // Phase B: Scan Transfer events to get actual timestamps for collection activity
+  // Find deployment block via binary search on contract code existence
+  log('Phase 2: Scanning collection transfer history...');
+  setProgress(baseProgress + collWeight * 0.68, 'Finding contract deployment...');
+  const lastActivityBlock = new Map(); // address -> blockNumber
+
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    let deployBlock = 0;
+
+    // Binary search: find the block where the contract was deployed
+    // by checking getCode at different block heights
+    let lo = 0, hi = currentBlock;
+    log('Searching for contract deployment block...');
+    for (let step = 0; step < 50 && hi - lo > 1; step++) {
+      if (aborted()) return null;
+      const mid = Math.floor((lo + hi) / 2);
+      try {
+        const code = await provider.getCode(address, mid);
+        if (code && code !== '0x') {
+          hi = mid; // contract exists at this block, search earlier
+        } else {
+          lo = mid; // no contract yet, search later
+        }
+      } catch {
+        // Some RPCs don't support historical getCode — fallback below
+        break;
+      }
+    }
+    deployBlock = hi;
+
+    // Validate: if deploy block is 0 or suspiciously low, the binary search failed
+    // Fallback: try scanning backwards from current block in large topic-filtered chunks
+    if (deployBlock <= 1 || deployBlock >= currentBlock - 10) {
+      log('Binary search inconclusive — probing for first event...', 'warn');
+      deployBlock = 0;
+      // Try exponentially growing ranges from block 0
+      for (let probe = 1000000; probe <= currentBlock; probe *= 3) {
+        if (aborted()) return null;
+        const from = Math.max(0, probe - 1000000);
+        const to = Math.min(probe, currentBlock);
+        try {
+          const events = await contract.queryFilter(contract.filters.Transfer(), from, to);
+          if (events.length > 0) {
+            deployBlock = events[0].blockNumber;
+            break;
+          }
+        } catch {
+          // Chunk too large for this RPC — try smaller
+          try {
+            const events = await contract.queryFilter(contract.filters.Transfer(), from, Math.min(from + 100000, to));
+            if (events.length > 0) { deployBlock = events[0].blockNumber; break; }
+          } catch { /* continue */ }
+        }
+      }
+    }
+
+    if (deployBlock > 0 && deployBlock < currentBlock) {
+      log(`Contract deployed around block ${deployBlock.toLocaleString()}`);
+
+      // Scan from deploy to now in adaptive chunks
+      let chunkSize = 3000;
+      let scannedFrom = deployBlock;
+      let totalEventsFound = 0;
+      const totalBlockRange = currentBlock - deployBlock;
+      let consecutiveErrors = 0;
+
+      while (scannedFrom < currentBlock) {
+        if (aborted()) return null;
+        const toBlock = Math.min(scannedFrom + chunkSize, currentBlock);
+        let events = [];
+        try {
+          events = await contract.queryFilter(contract.filters.Transfer(), scannedFrom, toBlock);
+          consecutiveErrors = 0;
+          // Adaptive: grow chunk if sparse, shrink if dense
+          if (events.length < 50 && chunkSize < 200000) chunkSize = Math.min(chunkSize * 3, 200000);
+          else if (events.length > 500 && chunkSize > 1000) chunkSize = Math.floor(chunkSize / 2);
+        } catch {
+          consecutiveErrors++;
+          if (chunkSize > 500) {
+            chunkSize = Math.floor(chunkSize / 3);
+            continue; // retry same range with smaller chunk
+          }
+          // Skip this range after too many failures
+          if (consecutiveErrors > 5) {
+            scannedFrom = toBlock + 1;
+            chunkSize = 3000;
+            consecutiveErrors = 0;
+            continue;
+          }
+        }
+
+        totalEventsFound += events.length;
+        for (const ev of events) {
+          const from = ev.args.from.toLowerCase();
+          const to = ev.args.to.toLowerCase();
+          // Always update to latest block (events come chronologically)
+          if (holders.has(from)) lastActivityBlock.set(from, ev.blockNumber);
+          if (holders.has(to)) lastActivityBlock.set(to, ev.blockNumber);
+        }
+
+        scannedFrom = toBlock + 1;
+        const progress = Math.min(1, (scannedFrom - deployBlock) / totalBlockRange);
+        const pct = baseProgress + collWeight * (0.68 + 0.22 * progress);
+        const holdersResolved = lastActivityBlock.size;
+        setProgress(pct, `Transfer scan: ${Math.round(progress * 100)}% — ${totalEventsFound} events, ${holdersResolved}/${holderAddrs.length} holders`);
+
+        await sleep(80);
+      }
+
+      log(`Found ${totalEventsFound} transfer events, resolved ${lastActivityBlock.size}/${holderAddrs.length} holders`, 'ok');
+    } else {
+      log('Could not find contract deployment block — using nonce data only', 'warn');
+    }
+  } catch (e) {
+    log(`Transfer event scan error: ${e.message}`, 'warn');
+  }
+
+  // Merge: convert block numbers to timestamps, combine with nonce data
+  setProgress(baseProgress + collWeight * 0.91, 'Resolving timestamps...');
+  const blockTimestampCache = new Map();
+  const blocksToResolve = [...new Set(lastActivityBlock.values())];
+
+  for (let i = 0; i < blocksToResolve.length; i += 20) {
+    if (aborted()) return null;
+    const batch = blocksToResolve.slice(i, i + 20);
+    const results = await Promise.allSettled(
+      batch.map(bn => withRetry(() => provider.getBlock(bn)))
+    );
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled' && r.value) {
+        blockTimestampCache.set(batch[idx], r.value.timestamp);
+      }
+    });
+    if (i + 20 < blocksToResolve.length) await sleep(150);
+  }
+
+  // Final classification: combine nonce (general wallet activity) + events (collection activity)
+  for (const addr of holderAddrs) {
+    const existing = walletHealth.get(addr) || { nonce: 0 };
+    const blockNum = lastActivityBlock.get(addr);
+
+    if (blockNum !== undefined) {
+      const ts = blockTimestampCache.get(blockNum) || 0;
+      const age = now - ts;
+      let status;
+      // Collection activity: when did they last send/receive THIS NFT
+      if (age < THREE_MONTHS) status = 'active';
+      else if (age < TWELVE_MONTHS) status = 'dormant';
+      else status = 'dead';
+      // Upgrade: if wallet has sent txs (nonce > 0) but collection activity is old,
+      // treat as dormant rather than dead (wallet is alive, just not trading this NFT)
+      if (status === 'dead' && existing.nonce > 0) status = 'dormant';
+      walletHealth.set(addr, { lastTx: ts, status, method: 'events' });
+    } else {
+      // No collection events found — rely on nonce
+      if (existing.nonce > 0) {
+        walletHealth.set(addr, { lastTx: 0, status: 'dormant', method: 'rpc' });
+      } else {
+        walletHealth.set(addr, { lastTx: 0, status: 'dead', method: 'rpc' });
+      }
+    }
+  }
+
+  const rpcMethodUsed = Array.from(walletHealth.values()).some(v => v.method === 'rpc');
+  const eventsMethodUsed = Array.from(walletHealth.values()).some(v => v.method === 'events');
+
+  // Count statuses
+  let active = 0, dormant = 0, dead = 0;
+  walletHealth.forEach(v => {
+    if (v.status === 'active') active++;
+    else if (v.status === 'dormant') dormant++;
+    else dead++;
+  });
+  log(`Health: ${active} active, ${dormant} dormant, ${dead} dead`);
+
+  // 5. Recent activity
+  setProgress(baseProgress + collWeight * 0.92, 'Checking recent activity...');
+  let lastMint = null, lastTransfer = null;
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    let transferEvents = [];
+    let searchRange = 10000;
+    while (transferEvents.length === 0 && searchRange <= 50000) {
+      const fromBlock = Math.max(0, currentBlock - searchRange);
+      try {
+        transferEvents = await contract.queryFilter(contract.filters.Transfer(), fromBlock, currentBlock);
+      } catch { /* some RPCs limit range */ }
+      if (transferEvents.length === 0) searchRange += 20000;
+    }
+
+    if (transferEvents.length > 0) {
+      // Sort descending by block number
+      transferEvents.sort((a, b) => b.blockNumber - a.blockNumber);
+      const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+
+      for (const ev of transferEvents) {
+        if (!lastTransfer) {
+          const block = await provider.getBlock(ev.blockNumber);
+          lastTransfer = { blockNumber: ev.blockNumber, timestamp: block.timestamp };
+        }
+        if (!lastMint && ev.args.from === ZERO_ADDR) {
+          const block = lastTransfer && lastTransfer.blockNumber === ev.blockNumber
+            ? { timestamp: lastTransfer.timestamp }
+            : await provider.getBlock(ev.blockNumber);
+          lastMint = { blockNumber: ev.blockNumber, timestamp: block.timestamp };
+        }
+        if (lastTransfer && lastMint) break;
+      }
+    }
+  } catch (e) {
+    log(`Could not fetch recent events: ${e.message}`, 'warn');
+  }
+
+  // 6. Calculate DOA Index
+  const totalHolders = holders.size;
+  const activePct = totalHolders > 0 ? (active / totalHolders) * 100 : 0;
+  const deadPct = totalHolders > 0 ? (dead / totalHolders) * 100 : 0;
+
+  // Holder distribution score
+  const holderDistScore = Math.min(100, (totalHolders / totalSupply) * 100);
+  // Whale concentration penalty: if top holder has >50% → penalty
+  const sortedHolders = Array.from(holders.entries()).sort((a, b) => b[1].length - a[1].length);
+  const topHolderPct = sortedHolders.length > 0 ? (sortedHolders[0][1].length / totalSupply) * 100 : 0;
+  const distributionScore = holderDistScore * (topHolderPct > 50 ? 0.5 : topHolderPct > 25 ? 0.75 : 1);
+
+  // Recent activity score
+  let activityScore = 0;
+  if (lastTransfer) {
+    const daysSince = (now - lastTransfer.timestamp) / 86400;
+    if (daysSince < 7) activityScore = 100;
+    else if (daysSince < 30) activityScore = 50;
+    else if (daysSince < 90) activityScore = 20;
+  }
+
+  const doaIndex = Math.round(
+    activePct * 0.40 +
+    (100 - deadPct) * 0.25 +
+    distributionScore * 0.20 +
+    activityScore * 0.15
+  );
+
+  setProgress(baseProgress + collWeight, 'Done');
+  log(`DOA Index: ${doaIndex} — ${doaStatus(doaIndex)}`, 'ok');
+
+  // Build ownership distribution
+  const dist = { one: 0, two5: 0, six10: 0, eleven50: 0, over50: 0 };
+  holders.forEach(tokens => {
+    const c = tokens.length;
+    if (c === 1) dist.one++;
+    else if (c <= 5) dist.two5++;
+    else if (c <= 10) dist.six10++;
+    else if (c <= 50) dist.eleven50++;
+    else dist.over50++;
+  });
+
+  return {
+    address, name, symbol, totalSupply, chain: chain.id, chainName: chain.name,
+    explorer: chain.explorer,
+    holders, walletHealth, totalHolders,
+    active, dormant, dead,
+    activePct, deadPct,
+    dist, sortedHolders,
+    lastMint, lastTransfer,
+    doaIndex, activityScore, distributionScore,
+    rpcMethodUsed,
+  };
+}
+
+// ─── Render Results ─────────────────────────────────────────────────────────
+function renderResults(chain) {
+  const container = document.getElementById('results-container');
+  container.innerHTML = '';
+
+  analysisResults.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'collection-results';
+    div.innerHTML = renderCollection(r, chain);
+    container.appendChild(div);
+  });
+
+  // Combined overview for multi-collection
+  if (analysisResults.length >= 2) {
+    renderCombinedOverview();
+  }
+
+  document.getElementById('results-section').style.display = 'block';
+  document.getElementById('share-section').style.display = 'block';
+}
+
+function renderCollection(r) {
+  const color = doaColor(r.doaIndex);
+  const status = doaStatus(r.doaIndex);
+  const avgPerHolder = r.totalHolders > 0 ? (r.totalSupply / r.totalHolders).toFixed(1) : 0;
+
+  // Ownership dist bar
+  const total = r.totalHolders || 1;
+  const distBar = [
+    { label: '1', count: r.dist.one, color: '#3b82f6' },
+    { label: '2-5', count: r.dist.two5, color: '#8b5cf6' },
+    { label: '6-10', count: r.dist.six10, color: '#f59e0b' },
+    { label: '11-50', count: r.dist.eleven50, color: '#f97316' },
+    { label: '51+', count: r.dist.over50, color: '#f87171' },
+  ];
+  const distBarHtml = distBar.map(d =>
+    `<div style="width:${(d.count/total*100)}%;background:${d.color}" title="${d.label}: ${d.count} holders"></div>`
+  ).join('');
+  const distLegendHtml = distBar.map(d =>
+    `<span style="font-size:0.7rem;color:${d.color};margin-right:12px;">&#9632; ${d.label}: ${d.count}</span>`
+  ).join('');
+
+  // Whale table
+  const top10 = r.sortedHolders.slice(0, 10);
+  const maxTokens = top10.length > 0 ? top10[0][1].length : 1;
+  const whaleRows = top10.map(([addr, tokens], i) => {
+    const pct = (tokens.length / r.totalSupply * 100).toFixed(1);
+    const barW = (tokens.length / maxTokens * 100).toFixed(0);
+    return `<tr>
+      <td style="color:#666">${i + 1}</td>
+      <td class="addr"><a href="${explorerAddrUrl(r.explorer, addr)}" target="_blank">${truncAddr(addr)}</a></td>
+      <td style="text-align:right;color:#f59e0b">${tokens.length}</td>
+      <td style="text-align:right">${pct}%</td>
+      <td style="width:30%"><div style="height:12px;background:#f59e0b33;border-radius:3px;overflow:hidden"><div style="width:${barW}%;height:100%;background:#f59e0b;border-radius:3px"></div></div></td>
+    </tr>`;
+  }).join('');
+
+  // Wallet health bar
+  const healthTotal = r.totalHolders || 1;
+  const activeW = (r.active / healthTotal * 100).toFixed(1);
+  const dormantW = (r.dormant / healthTotal * 100).toFixed(1);
+  const deadW = (r.dead / healthTotal * 100).toFixed(1);
+
+  // Wallet health table (expandable)
+  const sortedByStatus = Array.from(r.holders.entries()).map(([addr, tokens]) => {
+    const health = r.walletHealth.get(addr) || { status: 'dead', lastTx: 0 };
+    return { addr, tokens: tokens.length, lastTx: health.lastTx, status: health.status };
+  }).sort((a, b) => {
+    const order = { dead: 0, dormant: 1, active: 2 };
+    return order[a.status] - order[b.status];
+  });
+
+  const walletRows = sortedByStatus.map(w => {
+    const badgeCls = w.status === 'active' ? 'badge-active' : w.status === 'dormant' ? 'badge-dormant' : 'badge-dead';
+    const lastTxStr = w.lastTx > 0 ? timeAgo(w.lastTx) : 'Unknown';
+    return `<tr>
+      <td class="addr"><a href="${explorerAddrUrl(r.explorer, w.addr)}" target="_blank">${truncAddr(w.addr)}</a></td>
+      <td style="text-align:right">${w.tokens}</td>
+      <td>${lastTxStr}</td>
+      <td><span class="badge ${badgeCls}">${w.status}</span></td>
+    </tr>`;
+  }).join('');
+
+  // Recent activity
+  const lastMintStr = r.lastMint ? timeAgo(r.lastMint.timestamp) : 'No recent mints found';
+  const lastTransferStr = r.lastTransfer ? timeAgo(r.lastTransfer.timestamp) : 'No recent transfers found';
+
+  const uid = `coll-${r.address.slice(2, 8)}`;
+
+  return `
+    <!-- DOA Hero -->
+    <div class="doa-hero" style="border-color:${color}40;">
+      <div class="doa-label">DOA Index &middot; Dead or Alive</div>
+      <div class="doa-score" style="color:${color}">${r.doaIndex}</div>
+      <div class="doa-status" style="color:${color}">${status}</div>
+      <div class="doa-meta">${r.name} (${r.symbol}) &middot; Supply: ${r.totalSupply.toLocaleString()} &middot; ${r.chainName}</div>
+      <div class="doa-meta" style="font-size:0.7rem">${truncAddr(r.address)}</div>
+    </div>
+
+    <!-- Holders Overview -->
+    <div class="card">
+      <div class="label">Holders Overview</div>
+      <div class="stat-row">
+        <div class="stat-block"><div class="num" style="color:#3b82f6">${r.totalHolders}</div><div class="lbl">Unique Holders</div></div>
+        <div class="stat-block"><div class="num" style="color:#f59e0b">${avgPerHolder}</div><div class="lbl">Avg Tokens/Holder</div></div>
+      </div>
+      <div class="label" style="margin-top:12px">Ownership Distribution</div>
+      <div class="stacked-bar">${distBarHtml}</div>
+      <div>${distLegendHtml}</div>
+    </div>
+
+    <!-- Whale Analysis -->
+    <div class="card">
+      <div class="label">Top 10 Holders</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Address</th><th style="text-align:right">Count</th><th style="text-align:right">%</th><th>Share</th></tr></thead>
+          <tbody>${whaleRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Wallet Health -->
+    <div class="card">
+      <div class="label">Wallet Health</div>
+      <div style="color:#666;font-size:0.7rem;margin-bottom:10px;line-height:1.5;">
+        Based on collection transfer history (when each holder last sent/received an NFT in this collection)${r.rpcMethodUsed ? ' + on-chain nonce check' : ''}.<br>
+        <span style="color:#34d399">Active</span> = last collection transfer &lt;3 months ago &middot;
+        <span style="color:#f59e0b">Dormant</span> = 3-12 months ago (or wallet has on-chain activity but no recent NFT transfers) &middot;
+        <span style="color:#f87171">Dead</span> = &gt;12 months or no activity found
+      </div>
+      <div class="stat-row">
+        <div class="stat-block">
+          <div class="num" style="color:#34d399">${r.active}</div>
+          <div class="pct">${activeW}%</div>
+          <div class="lbl">Active (&lt;3mo)</div>
+        </div>
+        <div class="stat-block">
+          <div class="num" style="color:#f59e0b">${r.dormant}</div>
+          <div class="pct">${dormantW}%</div>
+          <div class="lbl">Dormant (3-12mo)</div>
+        </div>
+        <div class="stat-block">
+          <div class="num" style="color:#f87171">${r.dead}</div>
+          <div class="pct">${deadW}%</div>
+          <div class="lbl">Dead (&gt;12mo)</div>
+        </div>
+      </div>
+      <div class="stacked-bar">
+        <div style="width:${activeW}%;background:#34d399" title="Active: ${r.active}"></div>
+        <div style="width:${dormantW}%;background:#f59e0b" title="Dormant: ${r.dormant}"></div>
+        <div style="width:${deadW}%;background:#f87171" title="Dead: ${r.dead}"></div>
+      </div>
+      <div class="expandable-toggle" onclick="toggleExpand('${uid}')">Show all holders</div>
+      <div class="expandable-content" id="${uid}-expand">
+        <div class="tbl-wrap" style="max-height:400px;">
+          <table>
+            <thead><tr><th>Address</th><th style="text-align:right">Tokens</th><th>Last Activity</th><th>Status</th></tr></thead>
+            <tbody>${walletRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="card">
+      <div class="label">Recent Activity</div>
+      <div class="value">Last Mint: <span style="color:${r.lastMint ? '#34d399' : '#666'}">${lastMintStr}</span></div>
+      <div class="value" style="margin-bottom:0">Last Transfer: <span style="color:${r.lastTransfer ? '#3b82f6' : '#666'}">${lastTransferStr}</span></div>
+    </div>
+  `;
+}
+
+function toggleExpand(uid) {
+  const el = document.getElementById(uid + '-expand');
+  el.classList.toggle('open');
+  const toggle = el.previousElementSibling;
+  toggle.textContent = el.classList.contains('open') ? 'Hide holders' : 'Show all holders';
+}
+
+function renderCombinedOverview() {
+  // Deduplicate holders across collections
+  const allHolders = new Set();
+  const perCollection = [];
+  analysisResults.forEach(r => {
+    const addrs = new Set(r.holders.keys());
+    perCollection.push(addrs);
+    addrs.forEach(a => allHolders.add(a));
+  });
+
+  // Cross-collection overlap
+  let overlap = 0;
+  allHolders.forEach(addr => {
+    const inCount = perCollection.filter(s => s.has(addr)).length;
+    if (inCount > 1) overlap++;
+  });
+
+  // Combined wallet health
+  let totalActive = 0, totalDormant = 0, totalDead = 0;
+  analysisResults.forEach(r => { totalActive += r.active; totalDormant += r.dormant; totalDead += r.dead; });
+  const totalAll = totalActive + totalDormant + totalDead || 1;
+
+  const div = document.getElementById('combined-section');
+  div.style.display = 'block';
+  div.innerHTML = `
+    <div class="card" style="border-color:#3b82f6;">
+      <div class="label" style="color:#3b82f6">Combined Overview (${analysisResults.length} collections)</div>
+      <div class="stat-row">
+        <div class="stat-block"><div class="num" style="color:#3b82f6">${allHolders.size}</div><div class="lbl">Total Unique Holders</div></div>
+        <div class="stat-block"><div class="num" style="color:#8b5cf6">${overlap}</div><div class="lbl">Cross-Collection Overlap</div></div>
+      </div>
+      <div class="label" style="margin-top:12px">Combined Wallet Health</div>
+      <div class="stacked-bar">
+        <div style="width:${(totalActive/totalAll*100).toFixed(1)}%;background:#34d399"></div>
+        <div style="width:${(totalDormant/totalAll*100).toFixed(1)}%;background:#f59e0b"></div>
+        <div style="width:${(totalDead/totalAll*100).toFixed(1)}%;background:#f87171"></div>
+      </div>
+      <div style="font-size:0.75rem;color:#888;">
+        <span style="color:#34d399">&#9632; Active: ${totalActive}</span> &middot;
+        <span style="color:#f59e0b">&#9632; Dormant: ${totalDormant}</span> &middot;
+        <span style="color:#f87171">&#9632; Dead: ${totalDead}</span>
+      </div>
+    </div>
+  `;
+}
+
+// ─── Sharing ────────────────────────────────────────────────────────────────
+function getShareText() {
+  return analysisResults.map(r => {
+    const activePct = (r.active / (r.totalHolders || 1) * 100).toFixed(0);
+    const deadPct = (r.dead / (r.totalHolders || 1) * 100).toFixed(0);
+    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders} | Active: ${activePct}% | Dead: ${deadPct}%`;
+  }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @octopeeps';
+}
+
+function shareOnX() {
+  const text = getShareText();
+  const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
+  window.open(url, '_blank');
+}
+
+function copyStats() {
+  const text = getShareText();
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 2000);
+  });
+}
+
+function copyDonateAddr(el, addr) {
+  navigator.clipboard.writeText(addr).then(() => {
+    const toast = el.querySelector('.copied-toast');
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 1500);
+  });
+}
+
+async function downloadImage() {
+  try {
+    const el = document.getElementById('results-container');
+    const canvas = await html2canvas(el, { backgroundColor: '#0f0f0f', scale: 2 });
+    const link = document.createElement('a');
+    link.download = 'nft-health-report.png';
+    link.href = canvas.toDataURL();
+    link.click();
+  } catch (e) {
+    alert('Image capture failed: ' + e.message);
+  }
+}
+</script>
+</body>
+</html>
