@@ -1449,7 +1449,7 @@ function getShareText() {
     const activePct = (r.active / (r.totalHolders || 1) * 100).toFixed(0);
     const deadPct = (r.dead / (r.totalHolders || 1) * 100).toFixed(0);
     return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders} | Active: ${activePct}% | Dead: ${deadPct}%`;
-  }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @octopeeps';
+  }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @OctoPeepsNFTs';
 }
 
 function shareOnX() {
