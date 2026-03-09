@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "WebFetch(domain:api.etherscan.io)",
+      "WebFetch(domain:docs.etherscan.io)",
+      "Bash(node:*)",
+      "WebFetch(domain:www.multicall3.com)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "WebFetch(domain:chainlist.org)"
     ]
   }
 }

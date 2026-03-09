@@ -300,7 +300,7 @@ const CHAINS = [
     rpcUrls: ['https://polygon-bor-rpc.publicnode.com','https://rpc.ankr.com/polygon','https://polygon.llamarpc.com'],
     explorer: 'https://polygonscan.com', explorerApi: 'https://api.polygonscan.com/api' },
   { id: 'base', chainId: 8453, name: 'Base', currency: 'ETH', blockTime: 2,
-    rpcUrls: ['https://base-rpc.publicnode.com','https://rpc.ankr.com/base','https://base.llamarpc.com'],
+    rpcUrls: ['https://base.drpc.org','https://base-rpc.publicnode.com','https://rpc.ankr.com/base','https://base.llamarpc.com','https://mainnet.base.org'],
     explorer: 'https://basescan.org', explorerApi: 'https://api.basescan.org/api' },
   { id: 'arbitrum', chainId: 42161, name: 'Arbitrum', currency: 'ETH', blockTime: 0.25,
     rpcUrls: ['https://arbitrum-one-rpc.publicnode.com','https://rpc.ankr.com/arbitrum','https://arbitrum.llamarpc.com'],
@@ -327,7 +327,7 @@ const CHAINS = [
     rpcUrls: ['https://scroll-rpc.publicnode.com','https://rpc.scroll.io'],
     explorer: 'https://scrollscan.com', explorerApi: 'https://api.scrollscan.com/api' },
   { id: 'fantom', chainId: 250, name: 'Fantom', currency: 'FTM', blockTime: 1,
-    rpcUrls: ['https://fantom-rpc.publicnode.com','https://rpc.ankr.com/fantom','https://rpc.ftm.tools'],
+    rpcUrls: ['https://fantom-rpc.publicnode.com','https://rpc.ankr.com/fantom','https://fantom.drpc.org'],
     explorer: 'https://ftmscan.com', explorerApi: 'https://api.ftmscan.com/api' },
   { id: 'moonbeam', chainId: 1284, name: 'Moonbeam', currency: 'GLMR', blockTime: 12,
     rpcUrls: ['https://moonbeam-rpc.publicnode.com','https://rpc.api.moonbeam.network'],
@@ -354,7 +354,7 @@ const CHAINS = [
     rpcUrls: ['https://mode-rpc.publicnode.com','https://mainnet.mode.network'],
     explorer: 'https://modescan.io', explorerApi: null },
   { id: 'abstract', chainId: 2741, name: 'Abstract', currency: 'ETH', blockTime: 1,
-    rpcUrls: ['https://api.abstractions.io','https://abstract.drpc.org'],
+    rpcUrls: ['https://api.mainnet.abs.xyz','https://abstract.api.onfinality.io/public'],
     explorer: 'https://abscan.org', explorerApi: null },
   { id: 'sei', chainId: 1329, name: 'Sei', currency: 'SEI', blockTime: 0.4,
     rpcUrls: ['https://evm-rpc.sei-apis.com','https://sei-evm.drpc.org'],
@@ -371,9 +371,6 @@ const CHAINS = [
   { id: 'ronin', chainId: 2020, name: 'Ronin', currency: 'RON', blockTime: 3,
     rpcUrls: ['https://api.roninchain.com/rpc','https://ronin-rpc.publicnode.com'],
     explorer: 'https://app.roninchain.com', explorerApi: null },
-  { id: 'sepolia', chainId: 11155111, name: 'Sepolia (Testnet)', currency: 'ETH', blockTime: 12,
-    rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com','https://rpc.ankr.com/eth_sepolia'],
-    explorer: 'https://sepolia.etherscan.io', explorerApi: 'https://api-sepolia.etherscan.io/api' },
 ];
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -524,14 +521,72 @@ async function createProvider(chain) {
   throw new Error(`All RPCs failed for ${chain.name}`);
 }
 
-async function withRetry(fn, retries = 3) {
+async function withRetry(fn, retries = 4) {
   for (let i = 0; i < retries; i++) {
     try { return await fn(); }
     catch (e) {
       if (i === retries - 1) throw e;
-      await sleep(Math.min(1000 * Math.pow(2, i), 5000));
+      const is429 = e.message && (e.message.includes('429') || e.message.includes('rate') || e.message.includes('Too Many'));
+      await sleep(is429 ? Math.min(2000 * Math.pow(2, i), 10000) : Math.min(1000 * Math.pow(2, i), 5000));
     }
   }
+}
+
+// ─── Multicall3 — batch RPC calls ────────────────────────────────────────────
+const MULTICALL3_ADDR = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const MULTICALL3_ABI = [
+  'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) view returns (tuple(bool success, bytes returnData)[])'
+];
+const OWNER_OF_IFACE = new ethers.utils.Interface(['function ownerOf(uint256 tokenId) view returns (address)']);
+
+async function multicallOwnerOf(provider, contractAddr, tokenIds) {
+  const mc = new ethers.Contract(MULTICALL3_ADDR, MULTICALL3_ABI, provider);
+  const calls = tokenIds.map(id => ({
+    target: contractAddr,
+    allowFailure: true,
+    callData: OWNER_OF_IFACE.encodeFunctionData('ownerOf', [id]),
+  }));
+  const results = await mc.aggregate3(calls);
+  const owners = [];
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].success) {
+      try {
+        const decoded = OWNER_OF_IFACE.decodeFunctionResult('ownerOf', results[i].returnData);
+        owners.push({ tokenId: tokenIds[i], owner: decoded[0].toLowerCase() });
+      } catch { /* burned or error */ }
+    }
+  }
+  return owners;
+}
+
+// JSON-RPC batch — send multiple RPC calls in one HTTP request
+async function batchRpcCall(providerUrl, calls) {
+  const payload = calls.map((c, i) => ({
+    jsonrpc: '2.0', id: i + 1, method: c.method, params: c.params,
+  }));
+  const resp = await fetch(providerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const results = await resp.json();
+  if (!Array.isArray(results)) throw new Error('Batch RPC not supported');
+  // Sort by id to ensure correct order
+  results.sort((a, b) => a.id - b.id);
+  return results;
+}
+
+async function batchGetNonces(providerUrl, addresses) {
+  const calls = addresses.map(addr => ({
+    method: 'eth_getTransactionCount',
+    params: [addr, 'latest'],
+  }));
+  const results = await batchRpcCall(providerUrl, calls);
+  return results.map((r, i) => ({
+    addr: addresses[i],
+    nonce: r.result ? parseInt(r.result, 16) : 0,
+    error: r.error ? true : false,
+  }));
 }
 
 // ─── Analysis ───────────────────────────────────────────────────────────────
@@ -952,32 +1007,74 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   }
   log(`Token IDs start at ${startIndex}`);
 
-  // 3. Enumerate holders via ownerOf
+  // 3. Enumerate holders via ownerOf (try Multicall3 first, fallback to individual calls)
   setProgress(baseProgress + collWeight * 0.05, 'Enumerating holders...');
   const holders = new Map(); // address -> tokenIds[]
-  const batchSize = totalSupply > 5000 ? 60 : 40;
   let enumerated = 0;
   const endIndex = startIndex + totalSupply;
 
-  for (let i = startIndex; i < endIndex; i += batchSize) {
-    if (aborted()) return null;
-    const batch = [];
-    for (let j = i; j < Math.min(i + batchSize, endIndex); j++) {
-      batch.push(j);
-    }
-    const results = await Promise.allSettled(batch.map(id => withRetry(() => contract.ownerOf(id))));
-    results.forEach((r, idx) => {
-      if (r.status === 'fulfilled') {
-        const owner = r.value.toLowerCase();
-        if (!holders.has(owner)) holders.set(owner, []);
-        holders.get(owner).push(batch[idx]);
-      }
-    });
-    enumerated += batch.length;
-    const pct = baseProgress + collWeight * (0.05 + 0.45 * (enumerated / totalSupply));
-    setProgress(pct, `Holders: ${enumerated}/${totalSupply} tokens checked`);
+  // Try Multicall3 — batches ~200 ownerOf calls into 1 RPC call
+  let useMulticall = true;
+  try {
+    const testResult = await multicallOwnerOf(provider, address, [startIndex]);
+    if (testResult.length === 0) useMulticall = false;
+  } catch { useMulticall = false; }
 
-    if (i + batchSize < endIndex) await sleep(150);
+  if (useMulticall) {
+    const mcBatchSize = 200;
+    log('Using Multicall3 for fast holder enumeration', 'info');
+    for (let i = startIndex; i < endIndex; i += mcBatchSize) {
+      if (aborted()) return null;
+      const tokenIds = [];
+      for (let j = i; j < Math.min(i + mcBatchSize, endIndex); j++) tokenIds.push(j);
+      try {
+        const results = await withRetry(() => multicallOwnerOf(provider, address, tokenIds));
+        for (const { tokenId, owner } of results) {
+          if (!holders.has(owner)) holders.set(owner, []);
+          holders.get(owner).push(tokenId);
+        }
+      } catch (e) {
+        // This specific batch failed after retries — fall back for just this batch
+        log(`Multicall3 batch failed, using individual calls for ${tokenIds.length} tokens`, 'warn');
+        const subBatchSize = 20;
+        for (let s = 0; s < tokenIds.length; s += subBatchSize) {
+          const subBatch = tokenIds.slice(s, s + subBatchSize);
+          const results = await Promise.allSettled(subBatch.map(id => withRetry(() => contract.ownerOf(id))));
+          results.forEach((r, idx) => {
+            if (r.status === 'fulfilled') {
+              const owner = r.value.toLowerCase();
+              if (!holders.has(owner)) holders.set(owner, []);
+              holders.get(owner).push(subBatch[idx]);
+            }
+          });
+          if (s + subBatchSize < tokenIds.length) await sleep(100);
+        }
+      }
+      enumerated += tokenIds.length;
+      const pct = baseProgress + collWeight * (0.05 + 0.45 * (enumerated / totalSupply));
+      setProgress(pct, `Holders: ${enumerated}/${totalSupply} tokens checked`);
+      if (i + mcBatchSize < endIndex) await sleep(100);
+    }
+  } else {
+    // No Multicall3 available — individual calls only
+    const batchSize = totalSupply > 5000 ? 50 : 30;
+    for (let i = startIndex; i < endIndex; i += batchSize) {
+      if (aborted()) return null;
+      const batch = [];
+      for (let j = i; j < Math.min(i + batchSize, endIndex); j++) batch.push(j);
+      const results = await Promise.allSettled(batch.map(id => withRetry(() => contract.ownerOf(id))));
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled') {
+          const owner = r.value.toLowerCase();
+          if (!holders.has(owner)) holders.set(owner, []);
+          holders.get(owner).push(batch[idx]);
+        }
+      });
+      enumerated += batch.length;
+      const pct = baseProgress + collWeight * (0.05 + 0.45 * (enumerated / totalSupply));
+      setProgress(pct, `Holders: ${enumerated}/${totalSupply} tokens checked`);
+      if (i + batchSize < endIndex) await sleep(150);
+    }
   }
 
   log(`Found ${holders.size} unique holders`);
@@ -1014,10 +1111,19 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
       log(`Verifying ${confirmedContracts.length} contract(s) — checking depositor count...`);
       for (const [addr, tokens] of confirmedContracts) {
         try {
-          const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=tokennfttx&contractaddress=${address}&address=${addr}&page=1&offset=100&sort=desc&apikey=${explorerApiKey}`;
-          const resp = await fetch(url);
-          const data = await resp.json();
-          if (data.status === '1' && data.result) {
+          let data = null;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=tokennfttx&contractaddress=${address}&address=${addr}&page=1&offset=100&sort=desc&apikey=${explorerApiKey}`;
+            const resp = await fetch(url);
+            data = await resp.json();
+            if (data.status === '0' && data.result && typeof data.result === 'string' &&
+                (data.result.includes('rate limit') || data.result.includes('Max calls'))) {
+              await sleep(1500 * (attempt + 1));
+              continue;
+            }
+            break;
+          }
+          if (data && data.status === '1' && data.result) {
             // Count unique addresses that sent NFTs TO this contract
             const depositors = new Set();
             for (const tx of data.result) {
@@ -1072,26 +1178,68 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   const THREE_MONTHS = 90 * 86400;
   const TWELVE_MONTHS = 365 * 86400;
 
-  // Phase A: Fast nonce + balance check (lightweight, ~1-2 calls per holder)
+  // Phase A: Fast nonce check — try JSON-RPC batch (200 calls per HTTP request), fallback to individual
   log('Phase 1: Checking wallet nonces...');
-  const rpcBatchSize = 40;
-  for (let i = 0; i < holderAddrs.length; i += rpcBatchSize) {
-    if (aborted()) return null;
-    const batch = holderAddrs.slice(i, i + rpcBatchSize);
-    const results = await Promise.allSettled(batch.map(async addr => {
-      const nonce = await withRetry(() => provider.getTransactionCount(addr));
-      return { addr, nonce };
-    }));
-    for (const r of results) {
-      if (r.status === 'fulfilled') {
-        const { addr, nonce } = r.value;
-        // nonce > 0 means wallet has initiated at least one on-chain tx
-        walletHealth.set(addr, { lastTx: 0, nonce, status: nonce > 0 ? 'active' : 'dormant', method: 'rpc' });
+  const rpcUrl = provider.connection ? provider.connection.url : provider._url || '';
+  let usedBatchRpc = false;
+
+  if (rpcUrl) {
+    // Try batch RPC first — 200 nonce checks per HTTP request
+    const batchNonceSize = 200;
+    try {
+      // Test batch support with first 2 addresses
+      const testBatch = await batchGetNonces(rpcUrl, holderAddrs.slice(0, 2));
+      if (testBatch.length === 2 && !testBatch[0].error) {
+        usedBatchRpc = true;
+        log('Using batch RPC for nonce checks', 'info');
+        for (let i = 0; i < holderAddrs.length; i += batchNonceSize) {
+          if (aborted()) return null;
+          const batch = holderAddrs.slice(i, i + batchNonceSize);
+          try {
+            const results = await withRetry(() => batchGetNonces(rpcUrl, batch));
+            for (const { addr, nonce } of results) {
+              walletHealth.set(addr, { lastTx: 0, nonce, status: nonce > 0 ? 'active' : 'dormant', method: 'rpc' });
+            }
+          } catch {
+            // Fallback for this batch
+            const results = await Promise.allSettled(batch.map(async addr => {
+              const nonce = await withRetry(() => provider.getTransactionCount(addr));
+              return { addr, nonce };
+            }));
+            for (const r of results) {
+              if (r.status === 'fulfilled') {
+                walletHealth.set(r.value.addr, { lastTx: 0, nonce: r.value.nonce, status: r.value.nonce > 0 ? 'active' : 'dormant', method: 'rpc' });
+              }
+            }
+          }
+          const checked = Math.min(i + batchNonceSize, holderAddrs.length);
+          setProgress(baseProgress + collWeight * (0.52 + 0.15 * checked / holderAddrs.length),
+            `Nonce check: ${checked}/${holderAddrs.length} wallets`);
+          if (i + batchNonceSize < holderAddrs.length) await sleep(100);
+        }
       }
+    } catch { /* batch not supported, fall through */ }
+  }
+
+  if (!usedBatchRpc) {
+    // Fallback: individual calls
+    const rpcBatchSize = 40;
+    for (let i = 0; i < holderAddrs.length; i += rpcBatchSize) {
+      if (aborted()) return null;
+      const batch = holderAddrs.slice(i, i + rpcBatchSize);
+      const results = await Promise.allSettled(batch.map(async addr => {
+        const nonce = await withRetry(() => provider.getTransactionCount(addr));
+        return { addr, nonce };
+      }));
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          walletHealth.set(r.value.addr, { lastTx: 0, nonce: r.value.nonce, status: r.value.nonce > 0 ? 'active' : 'dormant', method: 'rpc' });
+        }
+      }
+      const pct = baseProgress + collWeight * (0.52 + 0.15 * Math.min(i + rpcBatchSize, holderAddrs.length) / holderAddrs.length);
+      setProgress(pct, `Nonce check: ${Math.min(i + rpcBatchSize, holderAddrs.length)}/${holderAddrs.length} wallets`);
+      if (i + rpcBatchSize < holderAddrs.length) await sleep(80);
     }
-    const pct = baseProgress + collWeight * (0.52 + 0.15 * Math.min(i + rpcBatchSize, holderAddrs.length) / holderAddrs.length);
-    setProgress(pct, `Nonce check: ${Math.min(i + rpcBatchSize, holderAddrs.length)}/${holderAddrs.length} wallets`);
-    if (i + rpcBatchSize < holderAddrs.length) await sleep(80);
   }
 
   const nonceActive = Array.from(walletHealth.values()).filter(v => v.nonce > 0).length;
@@ -1115,12 +1263,31 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
 
       while (hasMore) {
         if (aborted()) return null;
-        const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=tokennfttx&contractaddress=${address}&page=${page}&offset=10000&startblock=0&endblock=999999999&sort=desc&apikey=${explorerApiKey}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
+        let data = null;
+        // Retry loop for rate limits
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=tokennfttx&contractaddress=${address}&page=${page}&offset=10000&startblock=0&endblock=999999999&sort=desc&apikey=${explorerApiKey}`;
+          const resp = await fetch(url);
+          data = await resp.json();
 
-        if (data.status !== '1' || !data.result || data.result.length === 0) {
-          if (page === 1 && data.message) log(`Etherscan V2: ${data.message}`, 'warn');
+          // Check for rate limit — retry instead of giving up
+          if (data.status === '0' && data.result && typeof data.result === 'string' &&
+              (data.result.includes('rate limit') || data.result.includes('Max calls'))) {
+            await sleep(1500 * (attempt + 1));
+            continue;
+          }
+          break;
+        }
+
+        if (!data || data.status !== '1' || !data.result || data.result.length === 0) {
+          if (page === 1 && data) {
+            const msg = typeof data.result === 'string' ? data.result : data.message || 'Unknown error';
+            if (msg.includes('not supported') || msg.includes('upgrade')) {
+              log(`Etherscan V2 free tier not available for ${chain.name} — using RPC scan`, 'warn');
+            } else {
+              log(`Etherscan V2: ${msg}`, 'warn');
+            }
+          }
           hasMore = false;
           break;
         }
@@ -1139,7 +1306,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           `Etherscan V2: ${totalTxs} transfers, ${lastActivityTimestamp.size}/${holderAddrs.length} holders resolved`);
 
         if (data.result.length < 10000) hasMore = false;
-        else { page++; await sleep(250); } // Rate limit: ~5 req/sec free tier
+        else { page++; await sleep(400); } // Rate limit: stay under 3 calls/sec
       }
 
       if (lastActivityTimestamp.size > 0) {
@@ -1236,13 +1403,17 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
         if (age < THREE_MONTHS) status = 'active';
         else if (age < TWELVE_MONTHS) status = 'dormant';
         else status = 'dead';
+        // Nonce > 0 = wallet is alive on-chain — soften dead to dormant if not too old
         if (status === 'dead' && existing.nonce > 0 && age < TWO_YEARS) status = 'dormant';
         walletHealth.set(addr, { lastTx: ts, status, method: 'explorer-api' });
       } else {
+        // No transfer history found — use nonce as positive signal only
         if (existing.nonce > 0) {
-          walletHealth.set(addr, { lastTx: 0, status: 'dormant', method: 'nonce-only' });
+          // Wallet has sent txs → definitely alive, just no NFT activity found
+          walletHealth.set(addr, { lastTx: 0, status: 'inactive', method: 'nonce-only' });
         } else {
-          walletHealth.set(addr, { lastTx: 0, status: 'dead', method: 'nonce-only' });
+          // Nonce=0 → unknown (could be dead, could be smart wallet) → Phase C will check
+          walletHealth.set(addr, { lastTx: 0, status: 'dead', method: 'unresolved' });
         }
       }
     }
@@ -1280,9 +1451,9 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
         walletHealth.set(addr, { lastTx: ts, status, method: 'events' });
       } else {
         if (existing.nonce > 0) {
-          walletHealth.set(addr, { lastTx: 0, status: 'dormant', method: 'nonce-only' });
+          walletHealth.set(addr, { lastTx: 0, status: 'inactive', method: 'nonce-only' });
         } else {
-          walletHealth.set(addr, { lastTx: 0, status: 'dead', method: 'nonce-only' });
+          walletHealth.set(addr, { lastTx: 0, status: 'dead', method: 'unresolved' });
         }
       }
     }
@@ -1291,7 +1462,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   const rpcMethodUsed = Array.from(walletHealth.values()).some(v => v.method === 'rpc');
 
   // Phase C: Wallet liveness check — for "dead" holders, check if wallet is active on-chain
-  // Only with Etherscan API key (1 call per dead wallet)
+  // Only with Etherscan API key. CRITICAL: rate limit is 3 calls/sec on free tier
   let inactive = 0;
   if (explorerApiKey) {
     const deadAddrs = holderAddrs.filter(a => {
@@ -1303,37 +1474,82 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
       log(`Phase 3: Checking wallet liveness for ${deadAddrs.length} dead holders...`);
       setProgress(baseProgress + collWeight * 0.92, `Wallet liveness: 0/${deadAddrs.length}`);
 
-      const LIVENESS_BATCH = 5; // 5 calls/sec limit
-      for (let i = 0; i < deadAddrs.length; i += LIVENESS_BATCH) {
+      // Etherscan V2 free tier: 3 calls/sec — process one at a time with retry
+      let rateLimitHits = 0;
+      for (let i = 0; i < deadAddrs.length; i++) {
         if (aborted()) return null;
-        const batch = deadAddrs.slice(i, i + LIVENESS_BATCH);
+        const addr = deadAddrs[i];
+        let lastGeneralTx = 0;
 
-        const results = await Promise.allSettled(batch.map(async addr => {
-          const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=txlist&address=${addr}&page=1&offset=1&sort=desc&apikey=${explorerApiKey}`;
-          const resp = await fetch(url);
-          const data = await resp.json();
-          if (data.status === '1' && data.result && data.result.length > 0) {
-            return { addr, lastGeneralTx: parseInt(data.result[0].timeStamp) };
-          }
-          return { addr, lastGeneralTx: 0 };
-        }));
+        // Retry loop for rate limits
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            const url = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=txlist&address=${addr}&page=1&offset=1&sort=desc&apikey=${explorerApiKey}`;
+            const resp = await fetch(url);
+            const data = await resp.json();
 
-        for (const r of results) {
-          if (r.status === 'fulfilled' && r.value.lastGeneralTx > 0) {
-            const { addr, lastGeneralTx } = r.value;
-            const age = now - lastGeneralTx;
-            // Wallet active in last 12 months → "inactive" (holding, wallet alive)
-            if (age < TWELVE_MONTHS) {
-              const existing = walletHealth.get(addr);
-              walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'inactive', method: existing.method });
+            // Check for rate limit
+            if (data.status === '0' && data.result && typeof data.result === 'string' &&
+                (data.result.includes('rate limit') || data.result.includes('Max calls'))) {
+              rateLimitHits++;
+              await sleep(1500 * (attempt + 1)); // Back off: 1.5s, 3s, 4.5s, 6s, 7.5s
+              continue;
             }
+
+            // Handle "Result window too large" error
+            if (data.status === '0' && data.result === null) {
+              break; // API error, skip this wallet
+            }
+
+            if (data.status === '1' && data.result && data.result.length > 0) {
+              lastGeneralTx = parseInt(data.result[0].timeStamp);
+              break;
+            }
+
+            // txlist returned nothing — try internal txs as fallback (works on all chains)
+            if (lastGeneralTx === 0) {
+              await sleep(400); // Stay under 3/sec
+              const url2 = `https://api.etherscan.io/v2/api?chainid=${chain.chainId}&module=account&action=txlistinternal&address=${addr}&page=1&offset=1&sort=desc&apikey=${explorerApiKey}`;
+              const resp2 = await fetch(url2);
+              const data2 = await resp2.json();
+
+              if (data2.status === '0' && data2.result && typeof data2.result === 'string' &&
+                  (data2.result.includes('rate limit') || data2.result.includes('Max calls'))) {
+                rateLimitHits++;
+                await sleep(1500 * (attempt + 1));
+                continue;
+              }
+
+              if (data2.status === '1' && data2.result && data2.result.length > 0) {
+                lastGeneralTx = parseInt(data2.result[0].timeStamp);
+              }
+            }
+            break; // Got a real response (success or genuine "no data")
+          } catch (e) {
+            if (attempt < 4) await sleep(2000);
           }
         }
 
-        const checked = Math.min(i + LIVENESS_BATCH, deadAddrs.length);
-        setProgress(baseProgress + collWeight * (0.92 + 0.06 * checked / deadAddrs.length),
-          `Wallet liveness: ${checked}/${deadAddrs.length}`);
-        if (i + LIVENESS_BATCH < deadAddrs.length) await sleep(200);
+        if (lastGeneralTx > 0) {
+          const age = now - lastGeneralTx;
+          const existing = walletHealth.get(addr);
+          if (age < THREE_MONTHS) {
+            walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'active', method: existing.method });
+          } else if (age < TWELVE_MONTHS) {
+            walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'inactive', method: existing.method });
+          }
+          // else: last general tx > 12 months ago, stays dead
+        }
+
+        if ((i + 1) % 10 === 0 || i === deadAddrs.length - 1) {
+          setProgress(baseProgress + collWeight * (0.92 + 0.06 * (i + 1) / deadAddrs.length),
+            `Wallet liveness: ${i + 1}/${deadAddrs.length}`);
+        }
+        await sleep(350); // ~2.8 calls/sec — safely under 3/sec limit
+      }
+
+      if (rateLimitHits > 0) {
+        log(`Etherscan rate limit hit ${rateLimitHits} times — retried successfully`, 'info');
       }
     }
   }
@@ -1349,7 +1565,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   log(`Health: ${active} active, ${dormant} dormant, ${inactive} inactive, ${dead} dead`);
 
   // 5. Recent activity
-  setProgress(baseProgress + collWeight * 0.92, 'Checking recent activity...');
+  setProgress(baseProgress + collWeight * 0.98, 'Checking recent activity...');
   let lastMint = null, lastTransfer = null;
   try {
     const currentBlock = await provider.getBlockNumber();
