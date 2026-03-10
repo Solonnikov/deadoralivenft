@@ -1279,7 +1279,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           break;
         }
 
-        if (!data || data.status !== '1' || !data.result || data.result.length === 0) {
+        if (!data || data.status !== '1' || !Array.isArray(data.result) || data.result.length === 0) {
           if (page === 1 && data) {
             const msg = typeof data.result === 'string' ? data.result : data.message || 'Unknown error';
             if (msg.includes('not supported') || msg.includes('upgrade')) {
@@ -1471,7 +1471,8 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     });
 
     if (deadAddrs.length > 0) {
-      log(`Phase 3: Checking wallet liveness for ${deadAddrs.length} dead holders...`);
+      const estMinutes = Math.ceil(deadAddrs.length * 0.75 / 60); // ~0.75s per wallet (txlist + possible txlistinternal)
+      log(`Phase 3: Checking wallet liveness for ${deadAddrs.length} unresolved holders${estMinutes > 1 ? ` (~${estMinutes} min)` : ''}...`);
       setProgress(baseProgress + collWeight * 0.92, `Wallet liveness: 0/${deadAddrs.length}`);
 
       // Etherscan V2 free tier: 3 calls/sec — process one at a time with retry
@@ -1741,7 +1742,7 @@ function renderCollection(r, chain, elapsed) {
     } else if (w.lastTx > 0) {
       lastTxStr = timeAgo(w.lastTx);
     } else if (w.method === 'nonce-only') {
-      lastTxStr = w.status === 'dormant' ? 'No timestamp (wallet active)' : 'No activity found';
+      lastTxStr = 'Wallet active (no NFT data)';
     } else {
       lastTxStr = 'No data';
     }
