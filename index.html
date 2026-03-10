@@ -139,6 +139,7 @@
     /* Status badges */
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }
     .badge-active { background: #34d39933; color: #34d399; }
+    .badge-recent { background: #a3e63533; color: #a3e635; }
     .badge-dormant { background: #f59e0b33; color: #f59e0b; }
     .badge-inactive { background: #fb923c33; color: #fb923c; }
     .badge-dead { background: #f8717133; color: #f87171; }
@@ -851,6 +852,7 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
   const walletHealth = new Map();
   const holderAddrs = Array.from(holders.keys());
   const now = Date.now() / 1000;
+  const ONE_MONTH = 30 * 86400;
   const THREE_MONTHS = 90 * 86400;
   const TWELVE_MONTHS = 365 * 86400;
 
@@ -883,7 +885,8 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
         const age = now - lastTx;
         let status;
         if (lastTx === 0) status = 'dead';
-        else if (age < THREE_MONTHS) status = 'active';
+        else if (age < ONE_MONTH) status = 'active';
+        else if (age < THREE_MONTHS) status = 'recent';
         else if (age < TWELVE_MONTHS) status = 'dormant';
         else status = 'dead';
         walletHealth.set(addr, { lastTx, status, method: 'signatures' });
@@ -896,13 +899,14 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
   }
 
   // Count statuses
-  let active = 0, dormant = 0, dead = 0;
+  let active = 0, recent = 0, dormant = 0, dead = 0;
   walletHealth.forEach(v => {
     if (v.status === 'active') active++;
+    else if (v.status === 'recent') recent++;
     else if (v.status === 'dormant') dormant++;
     else dead++;
   });
-  log(`Health: ${active} active, ${dormant} dormant, ${dead} dead`);
+  log(`Health: ${active} active, ${recent} recent, ${dormant} dormant, ${dead} dead`);
 
   // 4. Recent activity
   setProgress(baseProgress + collWeight * 0.85, 'Checking recent activity...');
@@ -915,9 +919,23 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
     }
   } catch { /* no recent activity */ }
 
-  // 5. Calculate DOA Index (same formula as EVM)
+  // 5. Calculate DOA Index (same formula as EVM but without pump&dump data for Solana)
   const activePct = totalHolders > 0 ? (active / totalHolders) * 100 : 0;
+  const recentPct = totalHolders > 0 ? (recent / totalHolders) * 100 : 0;
   const deadPct = totalHolders > 0 ? (dead / totalHolders) * 100 : 0;
+
+  // Token-weighted wallet health
+  let weightedActive = 0, weightedRecent = 0, weightedDead = 0, totalTokensHeld = 0;
+  walletHealth.forEach((v, addr) => {
+    const tokenCount = holders.has(addr) ? holders.get(addr).length : 0;
+    totalTokensHeld += tokenCount;
+    if (v.status === 'active') weightedActive += tokenCount;
+    else if (v.status === 'recent') weightedRecent += tokenCount;
+    else if (v.status === 'dead') weightedDead += tokenCount;
+  });
+  const weightedActivePct = totalTokensHeld > 0 ? (weightedActive / totalTokensHeld) * 100 : activePct;
+  const weightedRecentPct = totalTokensHeld > 0 ? (weightedRecent / totalTokensHeld) * 100 : recentPct;
+  const weightedDeadPct = totalTokensHeld > 0 ? (weightedDead / totalTokensHeld) * 100 : deadPct;
 
   const holderDistScore = Math.min(100, (totalHolders / totalSupply) * 100);
   const sortedHolders = Array.from(holders.entries()).sort((a, b) => b[1].length - a[1].length);
@@ -932,9 +950,10 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
     else if (daysSince < 90) activityScore = 20;
   }
 
+  const healthScore = weightedActivePct * 1.0 + weightedRecentPct * 0.6;
   const doaIndex = Math.round(
-    activePct * 0.40 +
-    (100 - deadPct) * 0.25 +
+    healthScore * 0.40 +
+    (100 - weightedDeadPct) * 0.25 +
     distributionScore * 0.20 +
     activityScore * 0.15
   );
@@ -958,11 +977,14 @@ async function analyzeSolanaCollection(connection, dasUrl, collectionAddr, abort
     totalSupply, chain: 'solana', chainName: 'Solana',
     explorer: SOLANA_EXPLORER,
     holders, walletHealth, totalHolders,
-    active, dormant, inactive: 0, dead,
-    activePct, deadPct,
+    active, recent, dormant, inactive: 0, dead,
+    activePct, recentPct, deadPct,
     dist, sortedHolders,
     lastMint, lastTransfer,
     doaIndex, activityScore, distributionScore,
+    pdScore: null, mintersRetained: null, turnoverRatio: null, sellPressure: null,
+    minterCount: 0, recentTransferCount: 0, velocityRatio: 0,
+    collectionAgeDays: null, maturityBonus: 0, velocityScore: 0,
     rpcMethodUsed: false,
   };
 }
@@ -1131,11 +1153,15 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
                 depositors.add(tx.from.toLowerCase());
               }
             }
-            if (depositors.size > 5) {
-              // Many depositors → staking/marketplace contract
+            // Determine if this is a staking/vault contract or a smart wallet
+            // Smart wallets (Safe, multisig): few depositors AND low token-to-depositor ratio
+            // Staking contracts: many depositors OR very high token-to-depositor ratio
+            const tokenPerDepositor = depositors.size > 0 ? tokens.length / depositors.size : tokens.length;
+            const isStakingContract = depositors.size > 5 || tokenPerDepositor > 20 || (tokens.length > 50 && depositors.size <= 5);
+            if (isStakingContract) {
               contractHolders.set(addr, { count: tokens.length, pct: (tokens.length / totalSupply * 100).toFixed(1) });
               holders.delete(addr);
-              log(`Staking/marketplace contract: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%, ${depositors.size} depositors) — excluded`, 'info');
+              log(`Staking/vault contract: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${(tokens.length / totalSupply * 100).toFixed(1)}%, ${depositors.size} depositors) — excluded`, 'info');
             } else {
               log(`Smart contract wallet: ${addr.slice(0, 6)}...${addr.slice(-4)} (${tokens.length} NFTs, ${depositors.size} depositors) — kept as real holder`, 'info');
             }
@@ -1175,6 +1201,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   const walletHealth = new Map(); // address -> { lastTx, status, method }
   const holderAddrs = Array.from(holders.keys());
   const now = Date.now() / 1000;
+  const ONE_MONTH = 30 * 86400;
   const THREE_MONTHS = 90 * 86400;
   const TWELVE_MONTHS = 365 * 86400;
 
@@ -1257,6 +1284,8 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   const minters = new Set();        // addresses that minted (received from 0x0000)
   const allTimeHolders = new Set();  // every address that ever held a token
   let recentBuys = 0, recentSells = 0; // transfers in last 30 days relative to current holders
+  let recentTransferCount = 0;       // total transfers in last 30 days (for velocity)
+  let earliestMintTs = Infinity;     // earliest mint timestamp (for mint age)
   const THIRTY_DAYS = 30 * 86400;
 
   // Strategy 1: Etherscan V2 API — single key works for all EVM chains
@@ -1307,12 +1336,18 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           if (holders.has(from) && !lastActivityTimestamp.has(from)) lastActivityTimestamp.set(from, ts);
           if (holders.has(to) && !lastActivityTimestamp.has(to)) lastActivityTimestamp.set(to, ts);
           // Pump & dump signals
-          if (from === ZERO_ADDR_PD) minters.add(to);
+          if (from === ZERO_ADDR_PD) { minters.add(to); if (ts < earliestMintTs) earliestMintTs = ts; }
           if (from !== ZERO_ADDR_PD) allTimeHolders.add(from);
           allTimeHolders.add(to);
           if (ts > now - THIRTY_DAYS) {
-            if (holders.has(from) && from !== ZERO_ADDR_PD) recentSells++;
-            if (holders.has(to)) recentBuys++;
+            recentTransferCount++;
+            // Sell pressure: only count real market transfers (exclude mints, staking, and contract interactions)
+            const isFromContract = contractHolders.has(from);
+            const isToContract = contractHolders.has(to);
+            if (!isFromContract && !isToContract && from !== ZERO_ADDR_PD) {
+              if (holders.has(from)) recentSells++;  // holder sending away = sell
+              if (holders.has(to)) recentBuys++;     // holder receiving = buy
+            }
           }
         }
 
@@ -1393,8 +1428,13 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           const blockTime = chain.blockTime || 2;
           const recentBlockThreshold = currentBlock - Math.floor(THIRTY_DAYS / blockTime);
           if (ev.blockNumber > recentBlockThreshold) {
-            if (holders.has(evFrom) && evFrom !== ZERO_ADDR_RPC) recentSells++;
-            if (holders.has(evTo)) recentBuys++;
+            recentTransferCount++;
+            const isFromContract = contractHolders.has(evFrom);
+            const isToContract = contractHolders.has(evTo);
+            if (!isFromContract && !isToContract && evFrom !== ZERO_ADDR_RPC) {
+              if (holders.has(evFrom)) recentSells++;
+              if (holders.has(evTo)) recentBuys++;
+            }
           }
         }
 
@@ -1427,7 +1467,8 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
       if (ts !== undefined && ts > 0) {
         const age = now - ts;
         let status;
-        if (age < THREE_MONTHS) status = 'active';
+        if (age < ONE_MONTH) status = 'active';
+        else if (age < THREE_MONTHS) status = 'recent';
         else if (age < TWELVE_MONTHS) status = 'dormant';
         else status = 'dead';
         // Nonce > 0 = wallet is alive on-chain — soften dead to dormant if not too old
@@ -1471,7 +1512,8 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
         const ts = blockTimestampCache.get(blockNum) || 0;
         const age = now - ts;
         let status;
-        if (age < THREE_MONTHS) status = 'active';
+        if (age < ONE_MONTH) status = 'active';
+        else if (age < THREE_MONTHS) status = 'recent';
         else if (age < TWELVE_MONTHS) status = 'dormant';
         else status = 'dead';
         if (status === 'dead' && existing.nonce > 0 && age < TWO_YEARS) status = 'dormant';
@@ -1561,9 +1603,9 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
         if (lastGeneralTx > 0) {
           const age = now - lastGeneralTx;
           const existing = walletHealth.get(addr);
-          if (age < THREE_MONTHS) {
-            walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'active', method: existing.method });
-          } else if (age < TWELVE_MONTHS) {
+          // Phase C only saves wallets from "dead" → "inactive" (wallet alive but no NFT activity)
+          // "active"/"recent" statuses are reserved for actual NFT collection activity
+          if (age < TWELVE_MONTHS) {
             walletHealth.set(addr, { ...existing, walletLastTx: lastGeneralTx, status: 'inactive', method: existing.method });
           }
           // else: last general tx > 12 months ago, stays dead
@@ -1583,14 +1625,15 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   }
 
   // Count statuses
-  let active = 0, dormant = 0, dead = 0;
+  let active = 0, recent = 0, dormant = 0, dead = 0;
   walletHealth.forEach(v => {
     if (v.status === 'active') active++;
+    else if (v.status === 'recent') recent++;
     else if (v.status === 'dormant') dormant++;
     else if (v.status === 'inactive') inactive++;
     else dead++;
   });
-  log(`Health: ${active} active, ${dormant} dormant, ${inactive} inactive, ${dead} dead`);
+  log(`Health: ${active} active, ${recent} recent, ${dormant} dormant, ${inactive} inactive, ${dead} dead`);
 
   // 5. Recent activity
   setProgress(baseProgress + collWeight * 0.98, 'Checking recent activity...');
@@ -1633,7 +1676,21 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   // 6. Calculate DOA Index
   const totalHolders = holders.size;
   const activePct = totalHolders > 0 ? (active / totalHolders) * 100 : 0;
+  const recentPct = totalHolders > 0 ? (recent / totalHolders) * 100 : 0;
   const deadPct = totalHolders > 0 ? (dead / totalHolders) * 100 : 0;
+
+  // Token-weighted wallet health: weight each wallet by how many tokens it holds
+  let weightedActive = 0, weightedRecent = 0, weightedDead = 0, totalTokensHeld = 0;
+  walletHealth.forEach((v, addr) => {
+    const tokenCount = holders.has(addr) ? holders.get(addr).length : 0;
+    totalTokensHeld += tokenCount;
+    if (v.status === 'active') weightedActive += tokenCount;
+    else if (v.status === 'recent') weightedRecent += tokenCount;
+    else if (v.status === 'dead') weightedDead += tokenCount;
+  });
+  const weightedActivePct = totalTokensHeld > 0 ? (weightedActive / totalTokensHeld) * 100 : activePct;
+  const weightedRecentPct = totalTokensHeld > 0 ? (weightedRecent / totalTokensHeld) * 100 : recentPct;
+  const weightedDeadPct = totalTokensHeld > 0 ? (weightedDead / totalTokensHeld) * 100 : deadPct;
 
   // Holder distribution score
   const holderDistScore = Math.min(100, (totalHolders / totalSupply) * 100);
@@ -1651,10 +1708,25 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     else if (daysSince < 90) activityScore = 20;
   }
 
+  // Transfer velocity: transfers per 30 days relative to supply
+  const velocityRatio = totalSupply > 0 ? recentTransferCount / totalSupply : 0;
+  // 0 = dead, 0.1 = ~10% of supply traded in 30d, 1+ = very active
+  const velocityScore = Math.min(100, velocityRatio * 200); // 50% supply traded in 30d = 100
+
+  // Mint age context: older collections with decent activity deserve a bonus
+  const collectionAgeDays = earliestMintTs < Infinity ? (now - earliestMintTs) / 86400 : 0;
+  // Bonus for mature collections (>1 year old) that still have decent active holders
+  const maturityBonus = collectionAgeDays > 365 && (weightedActivePct + weightedRecentPct) > 20
+    ? Math.min(15, (collectionAgeDays / 365) * 5) // up to +15 for 3+ year old active collections
+    : 0;
+
   // Pump & dump detection signals
-  const mintersRetained = minters.size > 0
+  // Minter retention: only meaningful with multiple unique minters (>5)
+  // Single-minter collections (contract mints all tokens) → skip retention signal
+  const hasEnoughMinters = minters.size > 5;
+  const mintersRetained = hasEnoughMinters
     ? Array.from(minters).filter(a => holders.has(a)).length / minters.size
-    : 1; // no mint data = neutral
+    : null; // too few minters to be meaningful
   const turnoverRatio = totalHolders > 0 && allTimeHolders.size > 0
     ? allTimeHolders.size / totalHolders
     : 1; // 1 = no turnover
@@ -1663,8 +1735,8 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     ? recentSells / recentTotal
     : 0.5; // no recent data = neutral
 
-  // Retention score: 100 if all minters still hold, 0 if none do
-  const retentionScore = mintersRetained * 100;
+  // Retention score: 100 if all minters still hold, 0 if none do, neutral if not enough data
+  const retentionScore = mintersRetained !== null ? mintersRetained * 100 : 50; // neutral if insufficient data
   // Turnover penalty: ratio of 1 = perfect (no extra holders ever), >3 = heavy churn
   const turnoverScore = Math.max(0, 100 - (turnoverRatio - 1) * 25);
   // Sell pressure penalty: 0.5 = balanced, >0.7 = heavy selling
@@ -1678,15 +1750,26 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
   if (hasPdData) {
     log(`Pump&dump signals: minter retention ${(mintersRetained * 100).toFixed(0)}%, turnover ${turnoverRatio.toFixed(1)}x, sell pressure ${(sellPressure * 100).toFixed(0)}% → score ${pdScore}`, pdScore < 40 ? 'warn' : 'info');
   }
+  if (recentTransferCount > 0) {
+    log(`Transfer velocity: ${recentTransferCount} transfers in 30d (${(velocityRatio * 100).toFixed(1)}% of supply)`, 'info');
+  }
+  if (collectionAgeDays > 0) {
+    log(`Collection age: ${Math.round(collectionAgeDays)} days${maturityBonus > 0 ? ` (+${maturityBonus.toFixed(0)} maturity bonus)` : ''}`, 'info');
+  }
 
-  const doaIndex = Math.round(
-    activePct * 0.35 +
-    (100 - deadPct) * 0.20 +
-    distributionScore * 0.15 +
-    activityScore * 0.10 +
-    (hasPdData ? pdScore * 0.20 : 0) +
-    (!hasPdData ? activePct * 0.05 + (100 - deadPct) * 0.05 + distributionScore * 0.05 + activityScore * 0.05 : 0)
+  // Combined health score uses token-weighted percentages (whales count more)
+  const healthScore = weightedActivePct * 1.0 + weightedRecentPct * 0.6; // active=full, recent=60%
+
+  const rawIndex = Math.round(
+    healthScore * 0.30 +                    // 30% token-weighted active+recent holders
+    (100 - weightedDeadPct) * 0.15 +        // 15% alive holders
+    distributionScore * 0.10 +              // 10% distribution
+    velocityScore * 0.10 +                  // 10% transfer velocity
+    activityScore * 0.05 +                  // 5% recency of last transfer
+    (hasPdData ? pdScore * 0.20 : 0) +      // 20% market health (pump&dump)
+    (!hasPdData ? healthScore * 0.10 + velocityScore * 0.10 : 0) // redistribute if no p&d data
   );
+  const doaIndex = Math.min(100, rawIndex + Math.round(maturityBonus));
 
   setProgress(baseProgress + collWeight, 'Done');
   log(`DOA Index: ${doaIndex} — ${doaStatus(doaIndex)}`, 'ok');
@@ -1706,17 +1789,20 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     address, name, symbol, totalSupply, chain: chain.id, chainName: chain.name,
     explorer: chain.explorer,
     holders, walletHealth, totalHolders,
-    active, dormant, inactive, dead,
-    activePct, deadPct,
+    active, recent, dormant, inactive, dead,
+    activePct, recentPct, deadPct,
     dist, sortedHolders,
     contractHolders, stakedCount,
     lastMint, lastTransfer,
-    doaIndex, activityScore, distributionScore,
+    doaIndex, activityScore, distributionScore, velocityScore,
     pdScore: hasPdData ? pdScore : null,
-    mintersRetained: minters.size > 0 ? mintersRetained : null,
+    mintersRetained: hasEnoughMinters ? mintersRetained : null,
     turnoverRatio: allTimeHolders.size > 0 ? turnoverRatio : null,
     sellPressure: recentTotal > 0 ? sellPressure : null,
     minterCount: minters.size,
+    recentTransferCount, velocityRatio,
+    collectionAgeDays: collectionAgeDays > 0 ? collectionAgeDays : null,
+    maturityBonus,
     rpcMethodUsed,
   };
 }
@@ -1782,6 +1868,7 @@ function renderCollection(r, chain, elapsed) {
   // Wallet health bar
   const healthTotal = r.totalHolders || 1;
   const activeW = (r.active / healthTotal * 100).toFixed(1);
+  const recentW = ((r.recent || 0) / healthTotal * 100).toFixed(1);
   const dormantW = (r.dormant / healthTotal * 100).toFixed(1);
   const inactiveW = ((r.inactive || 0) / healthTotal * 100).toFixed(1);
   const deadW = (r.dead / healthTotal * 100).toFixed(1);
@@ -1791,12 +1878,12 @@ function renderCollection(r, chain, elapsed) {
     const health = r.walletHealth.get(addr) || { status: 'dead', lastTx: 0, method: 'unknown' };
     return { addr, tokens: tokens.length, lastTx: health.lastTx, status: health.status, method: health.method || '' };
   }).sort((a, b) => {
-    const order = { dead: 0, inactive: 1, dormant: 2, active: 3 };
+    const order = { dead: 0, inactive: 1, dormant: 2, recent: 3, active: 4 };
     return order[a.status] - order[b.status];
   });
 
   const walletRows = sortedByStatus.map(w => {
-    const badgeCls = w.status === 'active' ? 'badge-active' : w.status === 'dormant' ? 'badge-dormant' : w.status === 'inactive' ? 'badge-inactive' : 'badge-dead';
+    const badgeCls = w.status === 'active' ? 'badge-active' : w.status === 'recent' ? 'badge-recent' : w.status === 'dormant' ? 'badge-dormant' : w.status === 'inactive' ? 'badge-inactive' : 'badge-dead';
     let lastTxStr;
     const health = r.walletHealth.get(w.addr);
     if (w.status === 'inactive' && health && health.walletLastTx > 0) {
@@ -1875,17 +1962,23 @@ function renderCollection(r, chain, elapsed) {
       <div class="label">Wallet Health</div>
       <div style="color:#666;font-size:0.7rem;margin-bottom:10px;line-height:1.5;">
         Based on collection transfer history (when each holder last sent/received an NFT in this collection)${r.rpcMethodUsed ? ' + on-chain nonce check' : ''}${(r.inactive || 0) > 0 ? ' + wallet liveness check via Etherscan' : ''}.<br>
-        <span style="color:#34d399">Active</span> = last collection activity &lt;3 months &middot;
+        <span style="color:#34d399">Active</span> = last activity &lt;30 days &middot;
+        <span style="color:#a3e635">Recent</span> = 1-3 months &middot;
         <span style="color:#f59e0b">Dormant</span> = 3-12 months &middot;
-        <span style="color:#fb923c">Inactive</span> = no NFT activity &gt;12mo but wallet is alive on-chain &middot;
-        <span style="color:#f87171">Dead</span> = &gt;12 months with no wallet activity
+        <span style="color:#fb923c">Inactive</span> = no NFT activity &gt;12mo but wallet alive &middot;
+        <span style="color:#f87171">Dead</span> = &gt;12mo no wallet activity
       </div>
       <div class="stat-row">
         <div class="stat-block">
           <div class="num" style="color:#34d399">${r.active}</div>
           <div class="pct">${activeW}%</div>
-          <div class="lbl">Active (&lt;3mo)</div>
+          <div class="lbl">Active (&lt;30d)</div>
         </div>
+        ${(r.recent || 0) > 0 ? `<div class="stat-block">
+          <div class="num" style="color:#a3e635">${r.recent}</div>
+          <div class="pct">${recentW}%</div>
+          <div class="lbl">Recent (1-3mo)</div>
+        </div>` : ''}
         <div class="stat-block">
           <div class="num" style="color:#f59e0b">${r.dormant}</div>
           <div class="pct">${dormantW}%</div>
@@ -1904,6 +1997,7 @@ function renderCollection(r, chain, elapsed) {
       </div>
       <div class="stacked-bar">
         <div style="width:${activeW}%;background:#34d399" title="Active: ${r.active}"></div>
+        ${(r.recent || 0) > 0 ? `<div style="width:${recentW}%;background:#a3e635" title="Recent: ${r.recent}"></div>` : ''}
         <div style="width:${dormantW}%;background:#f59e0b" title="Dormant: ${r.dormant}"></div>
         ${(r.inactive || 0) > 0 ? `<div style="width:${inactiveW}%;background:#fb923c" title="Inactive: ${r.inactive}"></div>` : ''}
         <div style="width:${deadW}%;background:#f87171" title="Dead: ${r.dead}"></div>
@@ -1947,7 +2041,9 @@ function renderCollection(r, chain, elapsed) {
       <div style="color:#555;font-size:0.65rem;margin-top:8px;line-height:1.4;">
         ${r.mintersRetained !== null ? `&#9632; <b>Minter Retention</b>: ${(r.mintersRetained * 100).toFixed(0)}% of original minters (${r.minterCount}) still hold — ${r.mintersRetained >= 0.5 ? 'healthy' : r.mintersRetained >= 0.25 ? 'moderate churn' : 'most minters dumped'}<br>` : ''}
         ${r.turnoverRatio !== null ? `&#9632; <b>Holder Turnover</b>: ${r.turnoverRatio.toFixed(1)}x (${r.turnoverRatio <= 2 ? 'stable community' : r.turnoverRatio <= 4 ? 'moderate trading' : 'heavy flipping'})<br>` : ''}
-        ${r.sellPressure !== null ? `&#9632; <b>Sell Pressure</b>: ${(r.sellPressure * 100).toFixed(0)}% of recent transfers are sells — ${r.sellPressure <= 0.5 ? 'balanced or accumulating' : r.sellPressure <= 0.7 ? 'selling outpacing buying' : 'heavy dump detected'}` : ''}
+        ${r.sellPressure !== null ? `&#9632; <b>Sell Pressure</b>: ${(r.sellPressure * 100).toFixed(0)}% of recent transfers are sells — ${r.sellPressure <= 0.5 ? 'balanced or accumulating' : r.sellPressure <= 0.7 ? 'selling outpacing buying' : 'heavy dump detected'}<br>` : ''}
+        ${r.recentTransferCount > 0 ? `&#9632; <b>Transfer Velocity</b>: ${r.recentTransferCount} transfers in 30d (${(r.velocityRatio * 100).toFixed(1)}% of supply)<br>` : ''}
+        ${r.collectionAgeDays ? `&#9632; <b>Collection Age</b>: ${r.collectionAgeDays > 365 ? (r.collectionAgeDays / 365).toFixed(1) + ' years' : Math.round(r.collectionAgeDays) + ' days'}${r.maturityBonus > 0 ? ' (+' + Math.round(r.maturityBonus) + ' maturity bonus)' : ''}` : ''}
       </div>
     </div>` : ''}
 
@@ -1985,9 +2081,9 @@ function renderCombinedOverview() {
   });
 
   // Combined wallet health
-  let totalActive = 0, totalDormant = 0, totalInactive = 0, totalDead = 0;
-  analysisResults.forEach(r => { totalActive += r.active; totalDormant += r.dormant; totalInactive += (r.inactive || 0); totalDead += r.dead; });
-  const totalAll = totalActive + totalDormant + totalInactive + totalDead || 1;
+  let totalActive = 0, totalRecent = 0, totalDormant = 0, totalInactive = 0, totalDead = 0;
+  analysisResults.forEach(r => { totalActive += r.active; totalRecent += (r.recent || 0); totalDormant += r.dormant; totalInactive += (r.inactive || 0); totalDead += r.dead; });
+  const totalAll = totalActive + totalRecent + totalDormant + totalInactive + totalDead || 1;
 
   const div = document.getElementById('combined-section');
   div.style.display = 'block';
@@ -2001,12 +2097,14 @@ function renderCombinedOverview() {
       <div class="label" style="margin-top:12px">Combined Wallet Health</div>
       <div class="stacked-bar">
         <div style="width:${(totalActive/totalAll*100).toFixed(1)}%;background:#34d399"></div>
+        ${totalRecent > 0 ? `<div style="width:${(totalRecent/totalAll*100).toFixed(1)}%;background:#a3e635"></div>` : ''}
         <div style="width:${(totalDormant/totalAll*100).toFixed(1)}%;background:#f59e0b"></div>
         ${totalInactive > 0 ? `<div style="width:${(totalInactive/totalAll*100).toFixed(1)}%;background:#fb923c"></div>` : ''}
         <div style="width:${(totalDead/totalAll*100).toFixed(1)}%;background:#f87171"></div>
       </div>
       <div style="font-size:0.75rem;color:#888;">
         <span style="color:#34d399">&#9632; Active: ${totalActive}</span> &middot;
+        ${totalRecent > 0 ? `<span style="color:#a3e635">&#9632; Recent: ${totalRecent}</span> &middot;` : ''}
         <span style="color:#f59e0b">&#9632; Dormant: ${totalDormant}</span> &middot;
         ${totalInactive > 0 ? `<span style="color:#fb923c">&#9632; Inactive: ${totalInactive}</span> &middot;` : ''}
         <span style="color:#f87171">&#9632; Dead: ${totalDead}</span>
@@ -2019,11 +2117,13 @@ function renderCombinedOverview() {
 function getShareText() {
   return analysisResults.map(r => {
     const activePct = (r.active / (r.totalHolders || 1) * 100).toFixed(0);
+    const recentPctS = ((r.recent || 0) / (r.totalHolders || 1) * 100).toFixed(0);
     const deadPct = (r.dead / (r.totalHolders || 1) * 100).toFixed(0);
     const inactivePct = ((r.inactive || 0) / (r.totalHolders || 1) * 100).toFixed(0);
+    const recentStr = (r.recent || 0) > 0 ? ` | Recent: ${recentPctS}%` : '';
     const inactiveStr = (r.inactive || 0) > 0 ? ` | Inactive: ${inactivePct}%` : '';
     const stakedStr = (r.stakedCount || 0) > 0 ? ` (${r.stakedCount} staked/locked)` : '';
-    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders}${stakedStr} | Active: ${activePct}%${inactiveStr} | Dead: ${deadPct}%`;
+    return `${r.name} (${r.symbol}) on ${r.chainName}\nDOA Index: ${r.doaIndex}/100 — ${doaStatus(r.doaIndex)}\nHolders: ${r.totalHolders}${stakedStr} | Active: ${activePct}%${recentStr}${inactiveStr} | Dead: ${deadPct}%`;
   }).join('\n\n') + '\n\nAnalyzed with NFT Health Dashboard by @OctoPeepsNFTs';
 }
 
