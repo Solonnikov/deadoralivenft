@@ -1253,6 +1253,12 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
 
   let usedExplorerApi = false;
 
+  // Pump & dump detection: track signals from transfer data (zero extra API calls)
+  const minters = new Set();        // addresses that minted (received from 0x0000)
+  const allTimeHolders = new Set();  // every address that ever held a token
+  let recentBuys = 0, recentSells = 0; // transfers in last 30 days relative to current holders
+  const THIRTY_DAYS = 30 * 86400;
+
   // Strategy 1: Etherscan V2 API — single key works for all EVM chains
   if (explorerApiKey) {
     try {
@@ -1292,6 +1298,7 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           break;
         }
 
+        const ZERO_ADDR_PD = '0x0000000000000000000000000000000000000000';
         for (const tx of data.result) {
           const from = tx.from.toLowerCase();
           const to = tx.to.toLowerCase();
@@ -1299,6 +1306,14 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
           // Store most recent timestamp per holder (results sorted desc)
           if (holders.has(from) && !lastActivityTimestamp.has(from)) lastActivityTimestamp.set(from, ts);
           if (holders.has(to) && !lastActivityTimestamp.has(to)) lastActivityTimestamp.set(to, ts);
+          // Pump & dump signals
+          if (from === ZERO_ADDR_PD) minters.add(to);
+          if (from !== ZERO_ADDR_PD) allTimeHolders.add(from);
+          allTimeHolders.add(to);
+          if (ts > now - THIRTY_DAYS) {
+            if (holders.has(from) && from !== ZERO_ADDR_PD) recentSells++;
+            if (holders.has(to)) recentBuys++;
+          }
         }
 
         totalTxs += data.result.length;
@@ -1364,11 +1379,23 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
         }
 
         totalEventsFound += events.length;
+        const ZERO_ADDR_RPC = '0x0000000000000000000000000000000000000000';
         for (const ev of events) {
           const evFrom = ev.args.from.toLowerCase();
           const evTo = ev.args.to.toLowerCase();
           if (holders.has(evFrom) && !lastActivityBlock.has(evFrom)) lastActivityBlock.set(evFrom, ev.blockNumber);
           if (holders.has(evTo) && !lastActivityBlock.has(evTo)) lastActivityBlock.set(evTo, ev.blockNumber);
+          // Pump & dump signals (RPC path — no timestamps, use block proximity)
+          if (evFrom === ZERO_ADDR_RPC) minters.add(evTo);
+          if (evFrom !== ZERO_ADDR_RPC) allTimeHolders.add(evFrom);
+          allTimeHolders.add(evTo);
+          // Recent activity: estimate from block distance (last ~30 days worth of blocks)
+          const blockTime = chain.blockTime || 2;
+          const recentBlockThreshold = currentBlock - Math.floor(THIRTY_DAYS / blockTime);
+          if (ev.blockNumber > recentBlockThreshold) {
+            if (holders.has(evFrom) && evFrom !== ZERO_ADDR_RPC) recentSells++;
+            if (holders.has(evTo)) recentBuys++;
+          }
         }
 
         scanPos = fromBlock;
@@ -1624,11 +1651,41 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     else if (daysSince < 90) activityScore = 20;
   }
 
+  // Pump & dump detection signals
+  const mintersRetained = minters.size > 0
+    ? Array.from(minters).filter(a => holders.has(a)).length / minters.size
+    : 1; // no mint data = neutral
+  const turnoverRatio = totalHolders > 0 && allTimeHolders.size > 0
+    ? allTimeHolders.size / totalHolders
+    : 1; // 1 = no turnover
+  const recentTotal = recentBuys + recentSells;
+  const sellPressure = recentTotal > 0
+    ? recentSells / recentTotal
+    : 0.5; // no recent data = neutral
+
+  // Retention score: 100 if all minters still hold, 0 if none do
+  const retentionScore = mintersRetained * 100;
+  // Turnover penalty: ratio of 1 = perfect (no extra holders ever), >3 = heavy churn
+  const turnoverScore = Math.max(0, 100 - (turnoverRatio - 1) * 25);
+  // Sell pressure penalty: 0.5 = balanced, >0.7 = heavy selling
+  const sellPressureScore = sellPressure <= 0.5 ? 100
+    : Math.max(0, 100 - (sellPressure - 0.5) * 200);
+
+  // Combined pump & dump score (0-100, higher = healthier)
+  const pdScore = Math.round(retentionScore * 0.40 + turnoverScore * 0.30 + sellPressureScore * 0.30);
+
+  const hasPdData = minters.size > 0 || allTimeHolders.size > 0;
+  if (hasPdData) {
+    log(`Pump&dump signals: minter retention ${(mintersRetained * 100).toFixed(0)}%, turnover ${turnoverRatio.toFixed(1)}x, sell pressure ${(sellPressure * 100).toFixed(0)}% → score ${pdScore}`, pdScore < 40 ? 'warn' : 'info');
+  }
+
   const doaIndex = Math.round(
-    activePct * 0.40 +
-    (100 - deadPct) * 0.25 +
-    distributionScore * 0.20 +
-    activityScore * 0.15
+    activePct * 0.35 +
+    (100 - deadPct) * 0.20 +
+    distributionScore * 0.15 +
+    activityScore * 0.10 +
+    (hasPdData ? pdScore * 0.20 : 0) +
+    (!hasPdData ? activePct * 0.05 + (100 - deadPct) * 0.05 + distributionScore * 0.05 + activityScore * 0.05 : 0)
   );
 
   setProgress(baseProgress + collWeight, 'Done');
@@ -1655,6 +1712,11 @@ async function analyzeCollection(provider, chain, address, aborted, collIndex, t
     contractHolders, stakedCount,
     lastMint, lastTransfer,
     doaIndex, activityScore, distributionScore,
+    pdScore: hasPdData ? pdScore : null,
+    mintersRetained: minters.size > 0 ? mintersRetained : null,
+    turnoverRatio: allTimeHolders.size > 0 ? turnoverRatio : null,
+    sellPressure: recentTotal > 0 ? sellPressure : null,
+    minterCount: minters.size,
     rpcMethodUsed,
   };
 }
@@ -1856,6 +1918,38 @@ function renderCollection(r, chain, elapsed) {
         </div>
       </div>
     </div>
+
+    <!-- Market Health (Pump & Dump Detection) -->
+    ${r.pdScore !== null ? `
+    <div class="card">
+      <div class="label">Market Health</div>
+      <div style="color:#666;font-size:0.7rem;margin-bottom:10px;line-height:1.5;">
+        Signals derived from transfer history to detect pump &amp; dump patterns. Higher scores = healthier market dynamics.
+      </div>
+      <div class="stat-row">
+        ${r.mintersRetained !== null ? `<div class="stat-block">
+          <div class="num" style="color:${r.mintersRetained >= 0.5 ? '#34d399' : r.mintersRetained >= 0.25 ? '#f59e0b' : '#f87171'}">${(r.mintersRetained * 100).toFixed(0)}%</div>
+          <div class="lbl">Minter Retention</div>
+        </div>` : ''}
+        ${r.turnoverRatio !== null ? `<div class="stat-block">
+          <div class="num" style="color:${r.turnoverRatio <= 2 ? '#34d399' : r.turnoverRatio <= 4 ? '#f59e0b' : '#f87171'}">${r.turnoverRatio.toFixed(1)}x</div>
+          <div class="lbl">Holder Turnover</div>
+        </div>` : ''}
+        ${r.sellPressure !== null ? `<div class="stat-block">
+          <div class="num" style="color:${r.sellPressure <= 0.5 ? '#34d399' : r.sellPressure <= 0.7 ? '#f59e0b' : '#f87171'}">${(r.sellPressure * 100).toFixed(0)}%</div>
+          <div class="lbl">Sell Pressure (30d)</div>
+        </div>` : ''}
+        <div class="stat-block">
+          <div class="num" style="color:${r.pdScore >= 60 ? '#34d399' : r.pdScore >= 40 ? '#f59e0b' : '#f87171'}">${r.pdScore}</div>
+          <div class="lbl">Market Score</div>
+        </div>
+      </div>
+      <div style="color:#555;font-size:0.65rem;margin-top:8px;line-height:1.4;">
+        ${r.mintersRetained !== null ? `&#9632; <b>Minter Retention</b>: ${(r.mintersRetained * 100).toFixed(0)}% of original minters (${r.minterCount}) still hold — ${r.mintersRetained >= 0.5 ? 'healthy' : r.mintersRetained >= 0.25 ? 'moderate churn' : 'most minters dumped'}<br>` : ''}
+        ${r.turnoverRatio !== null ? `&#9632; <b>Holder Turnover</b>: ${r.turnoverRatio.toFixed(1)}x (${r.turnoverRatio <= 2 ? 'stable community' : r.turnoverRatio <= 4 ? 'moderate trading' : 'heavy flipping'})<br>` : ''}
+        ${r.sellPressure !== null ? `&#9632; <b>Sell Pressure</b>: ${(r.sellPressure * 100).toFixed(0)}% of recent transfers are sells — ${r.sellPressure <= 0.5 ? 'balanced or accumulating' : r.sellPressure <= 0.7 ? 'selling outpacing buying' : 'heavy dump detected'}` : ''}
+      </div>
+    </div>` : ''}
 
     <!-- Recent Activity -->
     <div class="card">

@@ -8,7 +8,8 @@
       "WebFetch(domain:www.multicall3.com)",
       "Bash(curl:*)",
       "WebSearch",
-      "WebFetch(domain:chainlist.org)"
+      "WebFetch(domain:chainlist.org)",
+      "Bash(git:*)"
     ]
   }
 }
